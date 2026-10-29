@@ -135,19 +135,39 @@ def _read_provider(client, email_id) -> dict:
         publish_up=email.get("publishUp") if isinstance(email, dict) else None,
         sent_count=_provider_int(email.get("sentCount")) if isinstance(email, dict) else None,
     )
+    # A broadcast with A/B variants or translations is one send over several
+    # emails: count every one of them.
+    children = _family_children(email)
+    if children:
+        evidence["family_email_ids"] = [str(child.get("id")) for child in children]
+        if evidence["sent_count"] is not None:
+            evidence["sent_count"] += sum(_provider_int(child.get("sentCount")) or 0 for child in children)
     try:
-        recorded = client.count_email_stats(email_id)
-        failed = client.count_email_stats(email_id, is_failed=1)
-        latest = client.get_latest_email_send(email_id)
+        members = [email_id, *evidence.get("family_email_ids", [])]
+        recorded = sum(client.count_email_stats(member) for member in members)
+        failed = sum(client.count_email_stats(member, is_failed=1) for member in members)
+        sent_dates = [((client.get_latest_email_send(member) or {}).get("date_sent")) for member in members]
+        latest = max((value for value in sent_dates if value), default=None)
     except MauticError:
         evidence["stats"] = None
     else:
         evidence["stats"] = {
             "recorded": recorded,
             "failed": failed,
-            "last_sent_at": (latest or {}).get("date_sent"),
+            "last_sent_at": latest,
         }
     return evidence
+
+
+def _family_children(email) -> list[dict]:
+    if not isinstance(email, dict):
+        return []
+    children = []
+    for key in ("variantChildren", "translationChildren"):
+        rows = email.get(key)
+        rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+        children.extend(row for row in rows if isinstance(row, dict) and row.get("id") is not None)
+    return children
 
 
 def _ecp_category(campaign, event, now):

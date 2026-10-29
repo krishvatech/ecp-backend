@@ -146,6 +146,13 @@ from .contact_bulk_views import (
     NewsletterAdminContactOwnersView,
 )
 from .contact_merge_views import NewsletterAdminContactMergeView
+from .broadcast_family_views import (
+    NewsletterAdminCampaignAbTestView,
+    NewsletterAdminCampaignFamilyView,
+    NewsletterAdminCampaignTranslationCreateView,
+    NewsletterAdminCampaignVariantCreateView,
+    NewsletterAdminCampaignVersionView,
+)
 from .contact_export_views import (
     NewsletterAdminContactExportDetailView,
     NewsletterAdminContactExportDownloadView,
@@ -242,6 +249,31 @@ urlpatterns = [
         "newsletter/admin/campaigns/<uuid:uuid>/",
         NewsletterAdminCampaignDetailView.as_view(),
         name="newsletter-admin-campaign-detail",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/family/",
+        NewsletterAdminCampaignFamilyView.as_view(),
+        name="newsletter-admin-campaign-family",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/variants/",
+        NewsletterAdminCampaignVariantCreateView.as_view(),
+        name="newsletter-admin-campaign-variants",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/translations/",
+        NewsletterAdminCampaignTranslationCreateView.as_view(),
+        name="newsletter-admin-campaign-translations",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/abtest/",
+        NewsletterAdminCampaignAbTestView.as_view(),
+        name="newsletter-admin-campaign-abtest",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/versions/<str:email_id>/",
+        NewsletterAdminCampaignVersionView.as_view(),
+        name="newsletter-admin-campaign-version",
     ),
     path(
         "newsletter/admin/campaigns/<uuid:uuid>/preview/",

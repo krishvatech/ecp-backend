@@ -206,10 +206,11 @@ class NewsletterCampaignAnalyticsSummaryAPITests(AnalyticsSummaryTestCase):
                 NewsletterCampaignTrackingEvent.objects.count(),
             ),
         )
-        # Only the read endpoint of the client is used.
+        # Only read endpoints of the client are used: the stats, and the
+        # broadcast's variants/translations whose stats are added in.
         self.assertEqual(
             {name for name, _, _ in self.mautic.method_calls},
-            {"get_email_stats"},
+            {"get_email_stats", "get_email_family_ids"},
         )
 
     def test_requires_marketing_hub_access(self):

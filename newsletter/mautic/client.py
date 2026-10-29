@@ -30,6 +30,9 @@ from .operations import (
     CAMPAIGN_CONTACT_ADD,
     CAMPAIGN_CONTACT_REMOVE,
     CONTACT_MERGE,
+    EMAIL_TRANSLATION_CREATE,
+    EMAIL_VARIANT_CREATE,
+    EMAIL_VARIANT_UPDATE,
     CAMPAIGN_CREATE,
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
@@ -2546,6 +2549,57 @@ class MauticClient:
         if not isinstance(test, dict) or not isinstance(test.get("versions"), list):
             raise TemporaryMauticError("Mautic template A/B test returned an invalid response")
         return test
+
+    def create_broadcast_variant(self, email_id, *, weight: int, winner_criteria: str, name: str | None = None) -> dict[str, Any]:
+        """Add an A/B variant to a broadcast's email: a copy, sent only inside its send."""
+        email = self._numeric_id(email_id, "email")
+        data = {"weight": int(weight), "winnerCriteria": winner_criteria, **({"name": name} if name else {})}
+        response = self._template_family_request(
+            "POST", f"ecp/bridge/emails/{email}/variants/new", operation=EMAIL_VARIANT_CREATE,
+            context="Mautic broadcast variant creation", data=data,
+        )
+        return self._email_payload(response, "Mautic broadcast variant creation")
+
+    def update_broadcast_variant(self, email_id, *, weight: int | None = None, winner_criteria: str | None = None) -> dict[str, Any]:
+        email = self._numeric_id(email_id, "email")
+        data: dict[str, Any] = {}
+        if weight is not None:
+            data["weight"] = int(weight)
+        if winner_criteria is not None:
+            data["winnerCriteria"] = winner_criteria
+        if not data:
+            raise PermanentMauticError("Mautic broadcast variant update payload is required")
+        return self._template_family_request(
+            "PATCH", f"ecp/bridge/emails/{email}/variant/edit", operation=EMAIL_VARIANT_UPDATE,
+            context="Mautic broadcast variant update", data=data,
+        )
+
+    def create_broadcast_translation(self, email_id, *, language: str, name: str | None = None) -> dict[str, Any]:
+        email = self._numeric_id(email_id, "email")
+        data = {"language": language, **({"name": name} if name else {})}
+        response = self._template_family_request(
+            "POST", f"ecp/bridge/emails/{email}/translations/new", operation=EMAIL_TRANSLATION_CREATE,
+            context="Mautic broadcast translation creation", data=data,
+        )
+        return self._email_payload(response, "Mautic broadcast translation creation")
+
+    def get_broadcast_abtest(self, email_id, *, timeout=None) -> dict[str, Any]:
+        email = self._numeric_id(email_id, "email")
+        response = self._request("GET", f"ecp/bridge/emails/{email}/abtest", timeout=timeout)
+        test = self._json_object(response, "Mautic broadcast A/B test").get("abTest")
+        if not isinstance(test, dict) or not isinstance(test.get("versions"), list):
+            raise TemporaryMauticError("Mautic broadcast A/B test returned an invalid response")
+        return test
+
+    def get_email_family_ids(self, email_id) -> list[str]:
+        """The email's variants and translations (not the email itself)."""
+        email = self.get_email(email_id)
+        ids = []
+        for key in ("variantChildren", "translationChildren"):
+            rows = email.get(key)
+            rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+            ids.extend(str(row["id"]) for row in rows if isinstance(row, dict) and row.get("id") is not None)
+        return ids
 
     @staticmethod
     def _email_payload(data: dict[str, Any], context: str) -> dict[str, Any]:

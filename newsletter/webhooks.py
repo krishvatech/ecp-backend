@@ -378,6 +378,36 @@ def _event_type_for_provider_event(provider_event_type: str, event: dict) -> str
     return event_type
 
 
+FAMILY_PARENT_CACHE_SECONDS = 24 * 3600
+
+
+def _broadcast_family_parent(email_id: str) -> str:
+    """The main email of a variant or translation, or "" (read once, cached).
+
+    A failed read is not cached, so the next event for that email tries again.
+    """
+    key = f"newsletter:email-family-parent:{email_id}"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    from .mautic import MauticClient, MauticError
+
+    try:
+        email = MauticClient().get_email(email_id)
+    except MauticError:
+        logger.warning("Could not read Mautic email id=%s to attribute a webhook event", email_id, exc_info=True)
+        return ""
+    parent = ""
+    for field in ("variantParent", "translationParent"):
+        value = email.get(field)
+        value = value.get("id") if isinstance(value, dict) else value
+        if value not in (None, ""):
+            parent = str(value)
+            break
+    cache.set(key, parent, FAMILY_PARENT_CACHE_SECONDS)
+    return parent
+
+
 def _attributable_campaign(email_id: str):
     """Return the one broadcast a Mautic email id belongs to, or None.
 
@@ -392,6 +422,11 @@ def _attributable_campaign(email_id: str):
     matches = list(
         NewsletterCampaign.objects.filter(mautic_email_id=str(int(email_id)))[:2]
     )
+    if not matches:
+        # A broadcast's A/B variant or translation is its own Mautic email.
+        parent_id = _broadcast_family_parent(str(int(email_id)))
+        if parent_id:
+            matches = list(NewsletterCampaign.objects.filter(mautic_email_id=parent_id)[:2])
     if len(matches) != 1:
         if matches:
             logger.warning(

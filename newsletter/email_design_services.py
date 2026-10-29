@@ -376,3 +376,22 @@ def template_save_lock(template_id):
     finally:
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [_TEMPLATE_LOCK_NAMESPACE, key])
+
+
+def copy_campaign_design_to_email(campaign, target_email_id, target_html, *, user):
+    """Give a Broadcast's A/B variant or translation its own copy of the
+    Broadcast's in-sync design, keyed by the copy's Mautic email id (like a
+    Template). Returns the new row or None (the copy is then HTML-only)."""
+    row = campaign_design_row(campaign)
+    if design_state(row, campaign.html_content)["status"] != DESIGN_STATUS_IN_SYNC:
+        return None
+    return NewsletterEmailDesign.objects.update_or_create(
+        mautic_email_id=str(target_email_id),
+        defaults={
+            "design_json": row.design_json,
+            "mjml": row.mjml,
+            "html_sha256": html_fingerprint(target_html),
+            "created_by": user,
+            "updated_by": user,
+        },
+    )[0]

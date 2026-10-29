@@ -67,6 +67,53 @@ def _stats_total(payload, fallback):
         return fallback
 
 
+def _email_stats_summary(client, email_id, *, include_send_summary):
+    """One Mautic email's recorded sends, opens and failures.
+
+    Opens come from ``is_read``/``date_read``; every email_stats row is a
+    recorded send attempt and ``is_failed`` marks the failures.
+    """
+    payload = client.get_email_stats(email_id)
+    rows = _rows_from_mautic_stats(payload)
+    total = _stats_total(payload, len(rows))
+    # The stats API returns one page (100 rows by default) but an exact
+    # total; past one page, counts come from filtered totals instead.
+    truncated = total > len(rows)
+
+    opened_count = 0
+    unique_open_identities = set()
+    for row in rows:
+        opened = (
+            _truthy(row.get("is_read"))
+            or _truthy(row.get("isRead"))
+            or bool(row.get("date_read"))
+            or bool(row.get("dateRead"))
+            or bool(row.get("last_opened"))
+            or bool(row.get("lastOpened"))
+        )
+        if not opened:
+            continue
+
+        opened_count += 1
+        identity = _mautic_recipient_identity(row)
+        if identity:
+            unique_open_identities.add(identity)
+    unique_open_count = len(unique_open_identities)
+
+    if truncated:
+        # One email_stats row per contact for a list email, so the read
+        # rows are also the unique opens.
+        opened_count = unique_open_count = client.count_email_stats(email_id, is_read=1)
+
+    failed_count = 0
+    if include_send_summary:
+        if truncated:
+            failed_count = client.count_email_stats(email_id, is_failed=1)
+        else:
+            failed_count = sum(1 for row in rows if _truthy(row.get("is_failed")) or _truthy(row.get("isFailed")))
+    return {"total": total, "opened": opened_count, "unique_opened": unique_open_count, "failed": failed_count}
+
+
 def _mautic_stats_summary(campaign, *, include_send_summary):
     """Read provider email stats once and derive what they objectively prove.
 
@@ -90,50 +137,23 @@ def _mautic_stats_summary(campaign, *, include_send_summary):
 
     try:
         client = MauticClient()
-        payload = client.get_email_stats(email_id)
-        rows = _rows_from_mautic_stats(payload)
-        total = _stats_total(payload, len(rows))
-        # The stats API returns one page (100 rows by default) but an exact
-        # total; past one page, counts come from filtered totals instead.
-        truncated = total > len(rows)
-
-        opened_count = 0
-        unique_open_identities = set()
-        for row in rows:
-            opened = (
-                _truthy(row.get("is_read"))
-                or _truthy(row.get("isRead"))
-                or bool(row.get("date_read"))
-                or bool(row.get("dateRead"))
-                or bool(row.get("last_opened"))
-                or bool(row.get("lastOpened"))
-            )
-            if not opened:
-                continue
-
-            opened_count += 1
-            identity = _mautic_recipient_identity(row)
-            if identity:
-                unique_open_identities.add(identity)
-        unique_open_count = len(unique_open_identities)
-
-        if truncated:
-            # One email_stats row per contact for a list email, so the read
-            # rows are also the unique opens.
-            opened_count = unique_open_count = client.count_email_stats(
-                email_id, is_read=1
-            )
+        # A broadcast with A/B variants or translations is one send over
+        # several emails; every contact gets exactly one of them, so the
+        # broadcast's numbers are the sum over the family.
+        children = client.get_email_family_ids(email_id)
+        family = [email_id, *(children if isinstance(children, list) else [])]
+        total = opened_count = unique_open_count = failed_count = 0
+        for member_id in family:
+            member = _email_stats_summary(client, member_id, include_send_summary=include_send_summary)
+            total += member["total"]
+            opened_count += member["opened"]
+            unique_open_count += member["unique_opened"]
+            failed_count += member["failed"]
+        if len(family) > 1:
+            metadata["mautic_family_email_ids"] = family
 
         send_summary = None
         if include_send_summary:
-            if truncated:
-                failed_count = client.count_email_stats(email_id, is_failed=1)
-            else:
-                failed_count = sum(
-                    1
-                    for row in rows
-                    if _truthy(row.get("is_failed")) or _truthy(row.get("isFailed"))
-                )
             send_summary = {
                 "sent_count": max(total - failed_count, 0),
                 "failed_count": failed_count,

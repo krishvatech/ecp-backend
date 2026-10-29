@@ -124,6 +124,9 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "template.variant.update",
         "template.variant.winner",
         "template.translation.create",
+        "email.variant.create",
+        "email.variant.update",
+        "email.translation.create",
     }
 )
 

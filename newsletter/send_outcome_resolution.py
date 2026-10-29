@@ -236,7 +236,9 @@ def classify(campaign, event, evidence, *, evidence_error="", now=None, tracking
         return result(CONFLICTING, "email_mismatch")
     if email.get("email_type") != "list":
         return result(CONFLICTING, "not_a_segment_email")
-    if email.get("related_email_ids"):
+    # A broadcast with A/B variants or translations is one send over several
+    # emails; only evidence that counts the whole family can describe it.
+    if email.get("related_email_ids") and evidence.get("family_aggregated") is not True:
         return result(CONFLICTING, "related_emails")
 
     total = _int(stats.get("total"))

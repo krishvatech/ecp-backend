@@ -99,6 +99,10 @@ FORM_ACTION_REORDER = "form.action.reorder"
 # Manual Campaign membership (EcpBridgeAudienceApiController).
 CAMPAIGN_CONTACT_ADD = "campaign.contact.add"
 CAMPAIGN_CONTACT_REMOVE = "campaign.contact.remove"
+# A/B variants and translations of a broadcast (EcpBridgeEmailApiController).
+EMAIL_VARIANT_CREATE = "email.variant.create"
+EMAIL_VARIANT_UPDATE = "email.variant.update"
+EMAIL_TRANSLATION_CREATE = "email.translation.create"
 # Manual contact merge (EcpBridgeContactMergeApiController).
 CONTACT_MERGE = "contact.merge"
 # Landing pages (EcpBridgePageApiController): never scripts or preference centers.
@@ -190,6 +194,9 @@ ASSERTABLE_OPERATIONS = frozenset(
         CAMPAIGN_CONTACT_ADD,
         CAMPAIGN_CONTACT_REMOVE,
         CONTACT_MERGE,
+        EMAIL_VARIANT_CREATE,
+        EMAIL_VARIANT_UPDATE,
+        EMAIL_TRANSLATION_CREATE,
         PAGE_CREATE,
         PAGE_UPDATE,
         PAGE_DELETE,

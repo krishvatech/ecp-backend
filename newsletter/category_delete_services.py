@@ -300,6 +300,11 @@ def mautic_dependencies(client, segment_id):
         email_id = str(email.get("id") or "").strip()
         if email_id in ecp_email_ids:
             continue
+        # A broadcast's translation (or variant) shares its segments and its state.
+        family_parent = email.get("translationParent") or email.get("variantParent")
+        family_parent = family_parent.get("id") if isinstance(family_parent, dict) else family_parent
+        if family_parent not in (None, "") and str(family_parent) in ecp_email_ids:
+            continue
         if segment_id in _ids(email.get("lists") or []):
             blockers.append(
                 _dependency(

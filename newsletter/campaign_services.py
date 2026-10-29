@@ -12,7 +12,7 @@ from .campaign_send_events import (
     create_campaign_send_event,
     dispatch_campaign_send_event_safely,
 )
-from .email_design_services import copy_campaign_design, save_campaign_design
+from .email_design_services import copy_campaign_design, delete_template_design, save_campaign_design
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticBridgeRejectedError
 from .mautic.payloads import (
@@ -196,6 +196,28 @@ def _repair_audience_segments(campaign, service_client):
         ) from exc
 
 
+# Settings a broadcast's A/B variants and translations always share with it.
+FAMILY_SHARED_FIELDS = ("fromName", "fromAddress")
+
+
+def sync_family_shared_fields(client, email_id, payload) -> None:
+    """Keep the broadcast's variants and translations on its sender and segments.
+
+    Their own subject and content are theirs. Mautic copies the segments to
+    translations itself whenever the main email is saved; variants get them here.
+    Nothing to do (one read) for a broadcast without variants or translations.
+    """
+    email = client.get_email(email_id)
+    shared = {field: payload[field] for field in FAMILY_SHARED_FIELDS if field in payload}
+    shared["emailType"] = "list"
+    for key, extra in (("variantChildren", {"lists": payload.get("lists", [])}), ("translationChildren", {})):
+        rows = email.get(key)
+        rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("id") is not None:
+                client.update_email(str(row["id"]), {**shared, **extra})
+
+
 def sync_campaign_to_mautic(campaign, *, actor=None, client=None):
     """Synchronize one draft broadcast into its Mautic list email.
 
@@ -230,6 +252,7 @@ def sync_campaign_to_mautic(campaign, *, actor=None, client=None):
 
         if existing_email_id:
             client.update_email(existing_email_id, payload)
+            sync_family_shared_fields(client, existing_email_id, payload)
         else:
             email = client.create_email(payload)
             campaign.mautic_email_id = str(email["id"])
@@ -280,6 +303,7 @@ def sync_campaign_for_worker_delivery(campaign, *, actor=None):
 
         if existing_email_id:
             client.update_email(existing_email_id, payload)
+            sync_family_shared_fields(client, existing_email_id, payload)
         else:
             email = client.create_email(payload)
             campaign.mautic_email_id = str(email["id"])
@@ -591,7 +615,14 @@ def delete_draft_campaign(campaign, *, client=None):
             )
 
         try:
-            (client or MauticClient()).delete_email(mautic_email_id)
+            client = client or MauticClient()
+            # Mautic would cascade the delete; the plugin refuses that, so the
+            # variants and translations go first, each with its visual design.
+            children = client.get_email_family_ids(mautic_email_id)
+            for child_id in children if isinstance(children, list) else []:
+                client.delete_email(child_id)
+                delete_template_design(child_id)
+            client.delete_email(mautic_email_id)
         except TemporaryMauticError as exc:
             _record_mautic_sync_error(campaign, exc)
             pending_error = CampaignMauticUnavailable(
