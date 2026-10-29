@@ -29,6 +29,7 @@ from .operations import (
     EMAIL_UPDATE,
     CAMPAIGN_CONTACT_ADD,
     CAMPAIGN_CONTACT_REMOVE,
+    CONTACT_MERGE,
     CAMPAIGN_CREATE,
     CAMPAIGN_DELETE,
     CAMPAIGN_EVENT_DELETE,
@@ -2637,6 +2638,18 @@ class MauticClient:
 
     def remove_contact_from_campaign(self, campaign_id, contact_id) -> None:
         self._campaign_contact_bridge("remove", campaign_id, contact_id, CAMPAIGN_CONTACT_REMOVE)
+
+    def merge_contacts(self, contact_id, other_contact_id) -> dict[str, Any]:
+        """Merge ``other_contact_id`` into ``contact_id`` (the Mautic UI's Merge button).
+
+        Mautic deletes the other contact afterwards. Asserted user only: there is
+        no REST endpoint for a manual merge and no service-account fallback."""
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic contact merges require per-user Mautic identity")
+        contact = self._numeric_id(contact_id, "contact")
+        other = self._numeric_id(other_contact_id, "contact")
+        response = self._bridge_request("POST", f"ecp/bridge/contacts/{contact}/merge/{other}", operation=CONTACT_MERGE)
+        return self._json_object(response, "Mautic contact merge")
 
     def list_users(self, **params) -> dict[str, Any]:
         data = self._json_object(self._request("GET", "users", params=params or None), "Mautic user list")

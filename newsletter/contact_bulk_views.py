@@ -73,3 +73,33 @@ class NewsletterAdminContactOwnersView(APIView):
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
         return Response({"count": len(owners), "results": owners})
+
+
+class NewsletterAdminContactCampaignsView(APIView):
+    """Every Campaign a contact is in, published or not. Changes go through bulk/."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, mautic_contact_id):
+        contact_id = str(mautic_contact_id or "").strip()
+        if not contact_id.isdigit():
+            return Response({"detail": "Contact must be a Mautic contact id.", "code": "invalid_contact"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            rows = MauticClient().get_contact_campaigns(contact_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            if isinstance(exc, PermanentMauticError) and "HTTP 404" in str(exc):
+                return Response({"detail": "That contact was not found in Mautic.", "code": "contact_not_found"},
+                                status=status.HTTP_404_NOT_FOUND)
+            return _provider_error(exc)
+        results = [
+            {
+                "id": str(row["id"]),
+                "name": str(row.get("name") or ""),
+                "published": bool(row.get("published")),
+                "manually_added": bool(row.get("manuallyAdded")),
+                "date_added": row.get("dateAdded"),
+            }
+            for row in rows
+        ]
+        return Response({"count": len(results), "results": results})

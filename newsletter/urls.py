@@ -136,7 +136,12 @@ from .marketing_notification_views import (
     NewsletterAdminMarketingNotificationListView,
     NewsletterAdminMarketingNotificationReadView,
 )
-from .contact_bulk_views import NewsletterAdminContactBulkActionView, NewsletterAdminContactOwnersView
+from .contact_bulk_views import (
+    NewsletterAdminContactBulkActionView,
+    NewsletterAdminContactCampaignsView,
+    NewsletterAdminContactOwnersView,
+)
+from .contact_merge_views import NewsletterAdminContactMergeView
 from .contact_export_views import (
     NewsletterAdminContactExportDetailView,
     NewsletterAdminContactExportDownloadView,
@@ -718,6 +723,16 @@ urlpatterns = [
         "newsletter/admin/tags/",
         NewsletterAdminTagListView.as_view(),
         name="newsletter-admin-tag-list",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/campaigns/",
+        NewsletterAdminContactCampaignsView.as_view(),
+        name="newsletter-admin-contact-campaigns",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/merge/",
+        NewsletterAdminContactMergeView.as_view(),
+        name="newsletter-admin-contact-merge",
     ),
     path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/points/",

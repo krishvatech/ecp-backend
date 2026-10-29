@@ -119,6 +119,7 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "contact.export.delete",
         "campaign.contact.add",
         "campaign.contact.remove",
+        "contact.merge",
     }
 )
 
