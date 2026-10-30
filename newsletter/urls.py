@@ -158,6 +158,13 @@ from .contact_export_views import (
     NewsletterAdminContactExportDownloadView,
     NewsletterAdminContactExportListCreateView,
 )
+from .asset_views import (
+    NewsletterAdminAssetDetailView,
+    NewsletterAdminAssetDownloadsView,
+    NewsletterAdminAssetFileView,
+    NewsletterAdminAssetListCreateView,
+    NewsletterAdminAssetMetadataView,
+)
 from .report_views import (
     NewsletterAdminReportDataView,
     NewsletterAdminReportDetailView,
@@ -713,6 +720,16 @@ urlpatterns = [
         NewsletterAdminContactOwnersView.as_view(),
         name="newsletter-admin-contact-owners",
     ),
+    # Assets (Mautic downloadable files). "metadata/" is static, asset ids numeric.
+    path("newsletter/admin/assets/", NewsletterAdminAssetListCreateView.as_view(), name="newsletter-admin-asset-list"),
+    path("newsletter/admin/assets/metadata/", NewsletterAdminAssetMetadataView.as_view(), name="newsletter-admin-asset-metadata"),
+    path("newsletter/admin/assets/<int:asset_id>/", NewsletterAdminAssetDetailView.as_view(), name="newsletter-admin-asset-detail"),
+    path(
+        "newsletter/admin/assets/<int:asset_id>/downloads/",
+        NewsletterAdminAssetDownloadsView.as_view(),
+        name="newsletter-admin-asset-downloads",
+    ),
+    path("newsletter/admin/assets/<int:asset_id>/file/", NewsletterAdminAssetFileView.as_view(), name="newsletter-admin-asset-file"),
     # Reports (Mautic report builder). Report ids are numeric, so the static
     # "sources/" and "exports/" segments never collide with them.
     path("newsletter/admin/reports/", NewsletterAdminReportListCreateView.as_view(), name="newsletter-admin-report-list"),

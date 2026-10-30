@@ -25,6 +25,7 @@ from .email_design_services import (
     template_design_state,
     template_save_lock,
 )
+from .asset_services import asset_link_tokens
 from .marketing_permissions import HasMarketingHubAccess
 from .models import NewsletterEmailDesign
 
@@ -830,6 +831,12 @@ class NewsletterAdminTemplateTokensView(APIView):
             *_field_tokens(contact_fields, group="Contact Fields", prefix="contactfield"),
             *_field_tokens(company_fields, group="Company Fields", prefix="companyfield"),
         ]
+        # Download links to published assets ({assetlink=ID}); optional, so a
+        # failing asset list never hides the field tokens.
+        try:
+            tokens.extend(asset_link_tokens(client))
+        except (TemporaryMauticError, PermanentMauticError):
+            pass
         return Response(
             {
                 "total": len(tokens),

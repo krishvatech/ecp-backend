@@ -24,6 +24,9 @@ from .exceptions import (
     TemporaryMauticError,
 )
 from .operations import (
+    ASSET_CREATE,
+    ASSET_DELETE,
+    ASSET_UPDATE,
     REPORT_CREATE,
     REPORT_DELETE,
     REPORT_UPDATE,
@@ -2779,6 +2782,86 @@ class MauticClient:
         other = self._numeric_id(other_contact_id, "contact")
         response = self._bridge_request("POST", f"ecp/bridge/contacts/{contact}/merge/{other}", operation=CONTACT_MERGE)
         return self._json_object(response, "Mautic contact merge")
+
+    # Assets --------------------------------------------------------------------
+    # Reads are the bridge's endpoints (service user). Writes are multipart to
+    # the bridge as the asserted user: the bridge stores an upload itself (the
+    # native API would take any path) and checks remote links before Mautic
+    # fetches them.
+
+    def get_asset_config(self) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "ecp/assets/config"), "Mautic asset settings")
+        if not isinstance(data.get("allowedExtensions"), list):
+            raise TemporaryMauticError("Mautic asset settings returned an invalid response")
+        return data
+
+    def list_assets(self, **params) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "ecp/assets", params=params or None), "Mautic asset list")
+        if not isinstance(data.get("assets"), list):
+            raise TemporaryMauticError("Mautic asset list returned an invalid response")
+        return data
+
+    def get_asset(self, asset_id) -> dict[str, Any]:
+        asset = self._numeric_id(asset_id, "asset")
+        return self._asset_from(self._request("GET", f"ecp/assets/{asset}"), "Mautic asset lookup")
+
+    def get_asset_downloads(self, asset_id, **params) -> dict[str, Any]:
+        asset = self._numeric_id(asset_id, "asset")
+        data = self._json_object(
+            self._request("GET", f"ecp/assets/{asset}/downloads", params=params or None), "Mautic asset downloads"
+        )
+        if not isinstance(data.get("recent"), list) or not isinstance(data.get("daily"), list):
+            raise TemporaryMauticError("Mautic asset downloads returned an invalid response")
+        return data
+
+    def get_asset_file(self, asset_id):
+        """The stored file (not counted as a download), as the raw response."""
+        asset = self._numeric_id(asset_id, "asset")
+        return self._request("GET", f"ecp/assets/{asset}/file", timeout=120)
+
+    def _require_asserted_assets(self) -> None:
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic asset changes require per-user Mautic identity")
+
+    @staticmethod
+    def _asset_form(fields: dict[str, Any], *, remote_url: str = "") -> dict[str, str]:
+        data = {key: "" if value is None else str(value) for key, value in fields.items()}
+        if remote_url:
+            data["remoteUrl"] = remote_url
+        return data
+
+    def create_asset(self, fields: dict[str, Any], *, upload=None, remote_url: str = "") -> dict[str, Any]:
+        """``upload`` is ``(file name, bytes, content type)``."""
+        self._require_asserted_assets()
+        response = self._bridge_request(
+            "POST", "ecp/bridge/assets/new", operation=ASSET_CREATE,
+            data=self._asset_form(fields, remote_url=remote_url),
+            files={"file": upload} if upload else None,
+            timeout=120,
+        )
+        return self._asset_from(response, "Mautic asset creation")
+
+    def update_asset(self, asset_id, fields: dict[str, Any], *, upload=None, remote_url: str = "") -> dict[str, Any]:
+        self._require_asserted_assets()
+        asset = self._numeric_id(asset_id, "asset")
+        response = self._bridge_request(
+            "POST", f"ecp/bridge/assets/{asset}/edit", operation=ASSET_UPDATE,
+            data=self._asset_form(fields, remote_url=remote_url),
+            files={"file": upload} if upload else None,
+            timeout=120,
+        )
+        return self._asset_from(response, "Mautic asset update")
+
+    def delete_asset(self, asset_id) -> None:
+        self._require_asserted_assets()
+        asset = self._numeric_id(asset_id, "asset")
+        self._bridge_request("DELETE", f"ecp/bridge/assets/{asset}/delete", operation=ASSET_DELETE)
+
+    def _asset_from(self, response, context: str) -> dict[str, Any]:
+        asset = self._json_object(response, context).get("asset")
+        if not isinstance(asset, dict) or asset.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return asset
 
     # Reports -------------------------------------------------------------------
     # Reads are the bridge's metadata/definition/data endpoints (service user);

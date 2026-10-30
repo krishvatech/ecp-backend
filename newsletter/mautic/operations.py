@@ -119,6 +119,10 @@ PAGE_TRANSLATION_CREATE = "page.translation.create"
 REPORT_CREATE = "report.create"
 REPORT_UPDATE = "report.update"
 REPORT_DELETE = "report.delete"
+# Assets (EcpBridgeAssetApiController): the bridge stores uploads itself.
+ASSET_CREATE = "asset.create"
+ASSET_UPDATE = "asset.update"
+ASSET_DELETE = "asset.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -212,5 +216,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         REPORT_CREATE,
         REPORT_UPDATE,
         REPORT_DELETE,
+        ASSET_CREATE,
+        ASSET_UPDATE,
+        ASSET_DELETE,
     }
 )

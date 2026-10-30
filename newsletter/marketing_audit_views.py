@@ -33,6 +33,7 @@ DOMAIN_DEFINITIONS = {
     "forms": ("Forms", ("form.",)),
     "pages": ("Landing Pages", ("page.",)),
     "reports": ("Reports", ("report.",)),
+    "assets": ("Assets", ("asset.",)),
     "delivery": ("Delivery", ("newsletter.",)),
     "access": ("Access", ("connection.",)),
 }
@@ -134,6 +135,10 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "report.export.create",
         "report.export.download",
         "report.export.delete",
+        "asset.create",
+        "asset.update",
+        "asset.delete",
+        "asset.file.download",
     }
 )
 
