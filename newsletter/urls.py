@@ -158,6 +158,7 @@ from .contact_export_views import (
     NewsletterAdminContactExportDownloadView,
     NewsletterAdminContactExportListCreateView,
 )
+from .calendar_views import NewsletterAdminCalendarView
 from .asset_views import (
     NewsletterAdminAssetDetailView,
     NewsletterAdminAssetDownloadsView,
@@ -720,6 +721,7 @@ urlpatterns = [
         NewsletterAdminContactOwnersView.as_view(),
         name="newsletter-admin-contact-owners",
     ),
+    path("newsletter/admin/calendar/", NewsletterAdminCalendarView.as_view(), name="newsletter-admin-calendar"),
     # Assets (Mautic downloadable files). "metadata/" is static, asset ids numeric.
     path("newsletter/admin/assets/", NewsletterAdminAssetListCreateView.as_view(), name="newsletter-admin-asset-list"),
     path("newsletter/admin/assets/metadata/", NewsletterAdminAssetMetadataView.as_view(), name="newsletter-admin-asset-metadata"),

@@ -2783,6 +2783,17 @@ class MauticClient:
         response = self._bridge_request("POST", f"ecp/bridge/contacts/{contact}/merge/{other}", operation=CONTACT_MERGE)
         return self._json_object(response, "Mautic contact merge")
 
+    # Marketing calendar ----------------------------------------------------------
+
+    def get_marketing_calendar(self, date_from: str, date_to: str) -> dict[str, Any]:
+        """Mautic dates (campaign steps, publish dates, report emails) for a UTC window."""
+        data = self._json_object(
+            self._request("GET", "ecp/calendar", params={"from": date_from, "to": date_to}), "Mautic calendar"
+        )
+        if not isinstance(data.get("items"), list):
+            raise TemporaryMauticError("Mautic calendar returned an invalid response")
+        return data
+
     # Assets --------------------------------------------------------------------
     # Reads are the bridge's endpoints (service user). Writes are multipart to
     # the bridge as the asserted user: the bridge stores an upload itself (the
