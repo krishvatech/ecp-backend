@@ -95,6 +95,15 @@ def run_contact_export(job_id: str):
     run_export(job_id)
 
 
+# Report export: same limits; Mautic runs the report query once per 1,000 rows.
+@shared_task(name="newsletter.run_report_export", time_limit=1800, soft_time_limit=1740)
+def run_report_export(job_id: str):
+    from .report_export_services import run_export
+
+    run_export(job_id)
+
+
+# Also removes report export files: they share the private export prefix.
 @shared_task(name="newsletter.purge_contact_exports")
 def purge_contact_exports():
     from .contact_export_services import purge_expired_files

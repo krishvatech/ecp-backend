@@ -24,6 +24,9 @@ from .exceptions import (
     TemporaryMauticError,
 )
 from .operations import (
+    REPORT_CREATE,
+    REPORT_DELETE,
+    REPORT_UPDATE,
     EMAIL_CREATE,
     EMAIL_DELETE,
     EMAIL_UPDATE,
@@ -2776,6 +2779,76 @@ class MauticClient:
         other = self._numeric_id(other_contact_id, "contact")
         response = self._bridge_request("POST", f"ecp/bridge/contacts/{contact}/merge/{other}", operation=CONTACT_MERGE)
         return self._json_object(response, "Mautic contact merge")
+
+    # Reports -------------------------------------------------------------------
+    # Reads are the bridge's metadata/definition/data endpoints (service user);
+    # writes are forwarded by the bridge to the native v1 report API as the
+    # asserted user, so Mautic's own form validates every column and filter.
+
+    def list_report_sources(self) -> list[dict[str, Any]]:
+        data = self._json_object(self._request("GET", "ecp/reports/sources"), "Mautic report sources")
+        rows = data.get("sources")
+        if not isinstance(rows, list):
+            raise TemporaryMauticError("Mautic report sources returned an invalid response")
+        return [row for row in rows if isinstance(row, dict) and row.get("source")]
+
+    def get_report_source(self, source: str) -> dict[str, Any]:
+        normalized = str(source or "").strip()
+        if not normalized or not all(ch.isalnum() or ch in "._" for ch in normalized):
+            raise PermanentMauticError("Mautic report source is invalid")
+        data = self._json_object(self._request("GET", f"ecp/reports/sources/{normalized}"), "Mautic report source")
+        if not isinstance(data.get("columns"), list):
+            raise TemporaryMauticError("Mautic report source returned an invalid response")
+        return data
+
+    def list_reports(self) -> list[dict[str, Any]]:
+        data = self._json_object(self._request("GET", "ecp/reports"), "Mautic report list")
+        rows = data.get("reports")
+        if not isinstance(rows, list):
+            raise TemporaryMauticError("Mautic report list returned an invalid response")
+        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+
+    def get_report(self, report_id) -> dict[str, Any]:
+        report = self._numeric_id(report_id, "report")
+        return self._report_from(self._request("GET", f"ecp/reports/{report}"), "Mautic report lookup")
+
+    def get_report_data(self, report_id, *, timeout=None, **params) -> dict[str, Any]:
+        report = self._numeric_id(report_id, "report")
+        data = self._json_object(
+            self._request("GET", f"ecp/reports/{report}/data", params=params or None, timeout=timeout),
+            "Mautic report data",
+        )
+        if not isinstance(data.get("rows"), list) or not isinstance(data.get("columns"), list):
+            raise TemporaryMauticError("Mautic report data returned an invalid response")
+        return data
+
+    def _require_asserted_reports(self) -> None:
+        # Saved reports are attributed to a human Mautic user or not changed at
+        # all: there is deliberately no service-account fallback.
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic report changes require per-user Mautic identity")
+
+    def create_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_asserted_reports()
+        response = self._bridge_request("POST", "ecp/bridge/reports/new", operation=REPORT_CREATE, json=payload)
+        return self._report_from(response, "Mautic report creation")
+
+    def update_report(self, report_id, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_asserted_reports()
+        report = self._numeric_id(report_id, "report")
+        response = self._bridge_request("PATCH", f"ecp/bridge/reports/{report}/edit", operation=REPORT_UPDATE, json=payload)
+        return self._report_from(response, "Mautic report update")
+
+    def delete_report(self, report_id) -> None:
+        self._require_asserted_reports()
+        report = self._numeric_id(report_id, "report")
+        self._bridge_request("DELETE", f"ecp/bridge/reports/{report}/delete", operation=REPORT_DELETE)
+
+    def _report_from(self, response, context: str) -> dict[str, Any]:
+        report = self._json_object(response, context).get("report")
+        if not isinstance(report, dict) or report.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return report
 
     def list_users(self, **params) -> dict[str, Any]:
         data = self._json_object(self._request("GET", "users", params=params or None), "Mautic user list")

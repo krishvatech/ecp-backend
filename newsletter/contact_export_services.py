@@ -403,11 +403,11 @@ def _write_csv(columns, rows) -> bytes:
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def _write_xlsx(columns, rows) -> bytes:
+def _write_xlsx(columns, rows, *, sheet_name: str = "Contacts") -> bytes:
     from openpyxl import Workbook
 
     workbook = Workbook(write_only=True)
-    sheet = workbook.create_sheet("Contacts")
+    sheet = workbook.create_sheet(sheet_name)
     sheet.append([column["label"] for column in columns])
     for row in rows:
         sheet.append(row)

@@ -115,6 +115,10 @@ PAGE_VARIANT_CREATE = "page.variant.create"
 PAGE_VARIANT_UPDATE = "page.variant.update"
 PAGE_VARIANT_WINNER = "page.variant.winner"
 PAGE_TRANSLATION_CREATE = "page.translation.create"
+# Reports (EcpReportApiController): forwarded to the native v1 report API.
+REPORT_CREATE = "report.create"
+REPORT_UPDATE = "report.update"
+REPORT_DELETE = "report.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -205,5 +209,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         PAGE_VARIANT_UPDATE,
         PAGE_VARIANT_WINNER,
         PAGE_TRANSLATION_CREATE,
+        REPORT_CREATE,
+        REPORT_UPDATE,
+        REPORT_DELETE,
     }
 )

@@ -158,6 +158,16 @@ from .contact_export_views import (
     NewsletterAdminContactExportDownloadView,
     NewsletterAdminContactExportListCreateView,
 )
+from .report_views import (
+    NewsletterAdminReportDataView,
+    NewsletterAdminReportDetailView,
+    NewsletterAdminReportExportDetailView,
+    NewsletterAdminReportExportDownloadView,
+    NewsletterAdminReportExportListCreateView,
+    NewsletterAdminReportListCreateView,
+    NewsletterAdminReportSourcesView,
+    NewsletterAdminReportSourceView,
+)
 from .contact_import_views import (
     NewsletterAdminContactImportDetailView,
     NewsletterAdminContactImportErrorsView,
@@ -702,6 +712,36 @@ urlpatterns = [
         "newsletter/admin/contacts/owners/",
         NewsletterAdminContactOwnersView.as_view(),
         name="newsletter-admin-contact-owners",
+    ),
+    # Reports (Mautic report builder). Report ids are numeric, so the static
+    # "sources/" and "exports/" segments never collide with them.
+    path("newsletter/admin/reports/", NewsletterAdminReportListCreateView.as_view(), name="newsletter-admin-report-list"),
+    path("newsletter/admin/reports/sources/", NewsletterAdminReportSourcesView.as_view(), name="newsletter-admin-report-sources"),
+    path(
+        "newsletter/admin/reports/sources/<str:source>/",
+        NewsletterAdminReportSourceView.as_view(),
+        name="newsletter-admin-report-source",
+    ),
+    path(
+        "newsletter/admin/reports/exports/<str:job_id>/",
+        NewsletterAdminReportExportDetailView.as_view(),
+        name="newsletter-admin-report-export-detail",
+    ),
+    path(
+        "newsletter/admin/reports/exports/<str:job_id>/download/",
+        NewsletterAdminReportExportDownloadView.as_view(),
+        name="newsletter-admin-report-export-download",
+    ),
+    path("newsletter/admin/reports/<int:report_id>/", NewsletterAdminReportDetailView.as_view(), name="newsletter-admin-report-detail"),
+    path(
+        "newsletter/admin/reports/<int:report_id>/data/",
+        NewsletterAdminReportDataView.as_view(),
+        name="newsletter-admin-report-data",
+    ),
+    path(
+        "newsletter/admin/reports/<int:report_id>/exports/",
+        NewsletterAdminReportExportListCreateView.as_view(),
+        name="newsletter-admin-report-exports",
     ),
     # Static "exports/" ranks above "<mautic_contact_id>/".
     path(

@@ -32,6 +32,7 @@ DOMAIN_DEFINITIONS = {
     "fields": ("Fields", ("field.",)),
     "forms": ("Forms", ("form.",)),
     "pages": ("Landing Pages", ("page.",)),
+    "reports": ("Reports", ("report.",)),
     "delivery": ("Delivery", ("newsletter.",)),
     "access": ("Access", ("connection.",)),
 }
@@ -127,6 +128,12 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "email.variant.create",
         "email.variant.update",
         "email.translation.create",
+        "report.create",
+        "report.update",
+        "report.delete",
+        "report.export.create",
+        "report.export.download",
+        "report.export.delete",
     }
 )
 
