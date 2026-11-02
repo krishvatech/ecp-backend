@@ -30,8 +30,14 @@ from .marketing_permissions import HasMarketingHubAccess
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.exceptions import MauticIdentityConfigurationError, MauticRequestNotSentError
 from .form_actions import (
+    ASSET,
+    REPOST,
     ActionPolicyError,
     TAGS,
+    UPDATE_CONTACT,
+    USER_EMAIL,
+    _protected_update_field,
+    resolve_host,
     action_matches,
     action_type_catalogue,
     normalize_action,
@@ -42,6 +48,7 @@ from .form_actions import (
     tag_catalogue,
     unexpected_changes as unexpected_action_changes,
 )
+from .contact_bulk_services import list_owner_choices
 from .form_fields import (
     FieldPolicyError,
     contact_field_choices,
@@ -51,17 +58,21 @@ from .form_fields import (
     normalize_field,
     ordered_fields,
     parse_order,
+    plan_field_removal,
     plan_field_update,
     plan_new_field,
+    removal_problems,
     unexpected_changes,
 )
 from .mautic.operations import (
     FORM_ACTION_CREATE,
+    FORM_ACTION_DELETE,
     FORM_ACTION_REORDER,
     FORM_ACTION_UPDATE,
     FORM_CREATE,
     FORM_DELETE,
     FORM_FIELD_CREATE,
+    FORM_FIELD_DELETE,
     FORM_FIELD_REORDER,
     FORM_FIELD_UPDATE,
     FORM_PUBLISH,
@@ -1092,6 +1103,60 @@ class NewsletterAdminFormFieldDetailView(APIView):
             verify=verify,
         )
 
+    def delete(self, request, form_id, field_id):
+        return _remove_field(request, form_id, field_id)
+
+
+def _confirmed(request) -> bool:
+    value = request.data.get("confirm") if isinstance(request.data, dict) else None
+    if value is None:
+        value = request.query_params.get("confirm")
+    return value is True or str(value).lower() in {"1", "true"}
+
+
+def _remove_field(request, form_id, field_id) -> Response:
+    """Remove one field. Mautic drops its results column, so stored
+    submission values of it are lost: refused without ``confirm`` when the
+    Form has submissions."""
+    normalized, form, field, error = _field_target(form_id, field_id)
+    if error is not None:
+        return error
+    try:
+        usage = MauticClient().get_form_usage(normalized, timeout=SUBMISSION_TIMEOUT)
+    except (TemporaryMauticError, PermanentMauticError) as exc:
+        return _provider_error_response(exc)
+    submissions = _submission_total(usage)
+    confirmed = _confirmed(request)
+    try:
+        plan_field_removal(field, form, submissions=submissions, confirmed=confirmed)
+    except FieldPolicyError as exc:
+        return _error(str(exc), code=exc.code, http_status=status.HTTP_409_CONFLICT, submissions=submissions)
+    target = str(field.get("id"))
+
+    def verify(saved, _stored):
+        return removal_problems(form, saved, target), f"{normalized}:{target}"
+
+    detail = f"removed {field.get('type')} field {field.get('alias')}"
+    if submissions:
+        detail += f"; {submissions} stored submission(s) lost its values"
+    return _run_field_write(
+        request,
+        action=FORM_FIELD_DELETE,
+        form_id=normalized,
+        resource_id=f"{normalized}:{target}",
+        detail=detail,
+        mutate=lambda client: client.delete_form_field(normalized, target, confirm=confirmed),
+        verify=verify,
+    )
+
+
+def _submission_total(usage: dict[str, Any]) -> int:
+    submissions = usage.get("submissions") if isinstance(usage.get("submissions"), dict) else {}
+    try:
+        return max(0, int(submissions.get("total") or 0))
+    except (TypeError, ValueError):
+        return 0
+
 
 class NewsletterAdminFormFieldReorderView(APIView):
     """Put a Form's fields in a new order."""
@@ -1162,8 +1227,88 @@ def _action_target(form_id, action_id=None):
     return normalized, form, action, None
 
 
+REFERENCE_LIMIT = 500
+
+
+def _complete(rows: list, total) -> bool:
+    try:
+        return int(total) <= len(rows)
+    except (TypeError, ValueError):
+        return True
+
+
+def _action_reference_lists() -> dict[str, list[dict[str, str]] | None]:
+    """What the new submit actions pick from: Mautic users, published emails,
+    published assets and contact fields. Each list is None when it could not be
+    loaded (the bridge still checks every reference)."""
+    lists: dict[str, list[dict[str, str]] | None] = {}
+    try:
+        lists["users"] = marketing_cache.cached_value(
+            "contact-owners", [], lambda: list_owner_choices(MauticClient()), ttl=marketing_cache.reference_ttl())
+    except (TemporaryMauticError, PermanentMauticError):
+        lists["users"] = None
+    try:
+        data = MauticClient().list_emails(limit=REFERENCE_LIMIT, publishedOnly=1, orderBy="name", orderByDir="ASC")
+        rows = data.get("emails")
+        rows = list(rows.values()) if isinstance(rows, dict) else rows or []
+        lists["emails"] = [
+            {"id": str(row["id"]), "name": str(row.get("name") or f"Email {row['id']}"), "emailType": str(row.get("emailType") or "")}
+            for row in rows if isinstance(row, dict) and row.get("id") and _provider_bool(row.get("isPublished", True))
+        ] if _complete(rows, data.get("total")) else None
+    except (TemporaryMauticError, PermanentMauticError):
+        lists["emails"] = None
+    try:
+        data = MauticClient().list_assets(limit=100, status="published")
+        rows = data.get("assets") or []
+        lists["assets"] = [
+            {"id": str(row["id"]), "name": str(row.get("title") or f"Asset {row['id']}")}
+            for row in rows if isinstance(row, dict) and str(row.get("id") or "").isdigit()
+        ] if _complete(rows, data.get("total")) else None
+    except (TemporaryMauticError, PermanentMauticError):
+        lists["assets"] = None
+    try:
+        data = marketing_cache.fields(MauticClient(), "contact", limit=REFERENCE_LIMIT)
+        rows = data.get("fields") if isinstance(data, dict) else []
+        rows = list(rows.values()) if isinstance(rows, dict) else rows or []
+        lists["contactFields"] = sorted((
+            {"id": str(row["alias"]), "name": str(row.get("label") or row["alias"]), "type": str(row.get("type") or "")}
+            for row in rows
+            if isinstance(row, dict) and row.get("alias") and str(row.get("object") or "lead") == "lead"
+            and _provider_bool(row.get("isPublished", True)) and not _protected_update_field(str(row["alias"]))
+        ), key=lambda row: row["name"].lower())
+    except (TemporaryMauticError, PermanentMauticError):
+        lists["contactFields"] = None
+    return lists
+
+
+# The bridge resolves a repost host itself before Mautic stores it (SSRF
+# check); a resolver without IPv6 answers can take several seconds.
+REPOST_WRITE_TIMEOUT = 30
+
+
+def _action_timeout(action_type) -> float | None:
+    return REPOST_WRITE_TIMEOUT if action_type == REPOST else None
+
+
+def _references_for(data) -> dict[str, dict[str, str] | None]:
+    """Reference lists only for actions that name users, emails, assets or
+    contact fields (a tag or points change needs none)."""
+    keys = set(data) if isinstance(data, dict) else set()
+    refs: dict[str, Any] = {}
+    if keys & {"assetId", "emailId", "userIds", "fieldValues"} or (isinstance(data, dict) and data.get("type") in {ASSET, USER_EMAIL, UPDATE_CONTACT}):
+        refs.update(_action_references())
+    if "postUrl" in keys:
+        refs["resolveHost"] = resolve_host
+    return refs
+
+
+def _action_references() -> dict[str, dict[str, str] | None]:
+    return {key: None if rows is None else {row["id"]: row["name"] for row in rows}
+            for key, rows in _action_reference_lists().items()}
+
+
 class NewsletterAdminFormActionMetadataView(APIView):
-    """Submit action types ECP manages, and Mautic's tags to choose from."""
+    """Submit action types ECP manages, and what they pick from in Mautic."""
 
     permission_classes = [HasMarketingHubAccess]
 
@@ -1173,9 +1318,10 @@ class NewsletterAdminFormActionMetadataView(APIView):
             "actionTypes": action_type_catalogue(),
             "tags": sorted(({"id": tag_id, "name": name} for tag_id, name in catalogue.items()), key=lambda t: t["name"].lower()),
             "tagLimit": TAG_CATALOGUE_LIMIT,
+            **_action_reference_lists(),
             "policyNote": (
-                "Forms can tag contacts or adjust their points. Actions that lift Do Not Contact, "
-                "send email to the contact or change segment membership are not offered."
+                "Actions that lift Do Not Contact, email the submitting contact or change segment "
+                "membership are not offered. Results emails go to your team, never to the contact."
             ),
         })
 
@@ -1198,7 +1344,7 @@ class NewsletterAdminFormActionListCreateView(APIView):
             return error
         catalogue = _tag_catalogue()
         try:
-            native, position = plan_new_action(request.data, form, catalogue)
+            native, position = plan_new_action(request.data, form, catalogue, _references_for(request.data))
         except ActionPolicyError as exc:
             return _action_policy_response(exc)
 
@@ -1222,7 +1368,7 @@ class NewsletterAdminFormActionListCreateView(APIView):
             form_id=normalized,
             resource_id=normalized,
             detail=f"added {native['type']} action",
-            mutate=lambda client: client.create_form_action(normalized, native, position),
+            mutate=lambda client: client.create_form_action(normalized, native, position, timeout=_action_timeout(native.get("type"))),
             verify=verify,
             kind="action",
         )
@@ -1240,7 +1386,7 @@ class NewsletterAdminFormActionDetailView(APIView):
             return error
         catalogue = _tag_catalogue()
         try:
-            native = plan_action_update(request.data, action, catalogue)
+            native = plan_action_update(request.data, action, catalogue, _references_for(request.data))
         except ActionPolicyError as exc:
             return _action_policy_response(exc)
         target = str(action.get("id"))
@@ -1263,7 +1409,32 @@ class NewsletterAdminFormActionDetailView(APIView):
             form_id=normalized,
             resource_id=f"{normalized}:{target}",
             detail="changed: " + ", ".join(sorted(native)),
-            mutate=lambda client: client.update_form_action(normalized, target, native),
+            mutate=lambda client: client.update_form_action(normalized, target, native, timeout=_action_timeout(action.get("type"))),
+            verify=verify,
+            kind="action",
+        )
+
+    def delete(self, request, form_id, action_id):
+        normalized, form, action, error = _action_target(form_id, action_id)
+        if error is not None:
+            return error
+        target = str(action.get("id"))
+        remaining = [a for a in ordered_actions(form) if str(a.get("id")) != target]
+
+        def verify(saved, _stored):
+            problems = unexpected_action_changes({**form, "actions": remaining}, saved, target_id="",
+                                                 expected_order=[str(a.get("id")) for a in remaining])
+            if any(str(a.get("id")) == target for a in ordered_actions(saved)):
+                problems.append("the action is still on the Form")
+            return problems, f"{normalized}:{target}"
+
+        return _run_field_write(
+            request,
+            action=FORM_ACTION_DELETE,
+            form_id=normalized,
+            resource_id=f"{normalized}:{target}",
+            detail=f"removed {action.get('type')} action",
+            mutate=lambda client: client.delete_form_action(normalized, target),
             verify=verify,
             kind="action",
         )

@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import APIException
 
+from .email_delivery_options import normalize_delivery_options
 from .campaign_send_events import (
     create_campaign_send_event,
     dispatch_campaign_send_event_safely,
@@ -204,11 +205,16 @@ def sync_family_shared_fields(client, email_id, payload) -> None:
     """Keep the broadcast's variants and translations on its sender and segments.
 
     Their own subject and content are theirs. Mautic copies the segments to
-    translations itself whenever the main email is saved; variants get them here.
+    translations itself whenever the main email is saved; variants get them here,
+    and every version gets the main email's Reply-To, UTM tags and attachments.
     Nothing to do (one read) for a broadcast without variants or translations.
     """
     email = client.get_email(email_id)
     shared = {field: payload[field] for field in FAMILY_SHARED_FIELDS if field in payload}
+    # Delivery options live on the main Mautic email only; versions share them.
+    options = normalize_delivery_options(email)
+    shared.update({"replyToAddress": options["replyToAddress"], "utmTags": options["utmTags"],
+                   "assetAttachments": [asset["id"] for asset in options["assetAttachments"]]})
     shared["emailType"] = "list"
     for key, extra in (("variantChildren", {"lists": payload.get("lists", [])}), ("translationChildren", {})):
         rows = email.get(key)

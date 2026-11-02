@@ -45,7 +45,8 @@ class BulkParsingTests(SimpleTestCase):
     def test_invalid_requests_have_codes(self):
         cases = [
             ({"action": "dnc_remove", "contact_ids": [3]}, "invalid_action"),
-            ({"action": "tags_add", "contact_ids": [3]}, "invalid_action"),
+            ({"action": "tags_replace", "contact_ids": [3]}, "invalid_action"),
+            ({"action": "tags_add", "contact_ids": [3]}, "invalid_target"),
             ({"action": "segment_add", "contact_ids": [3]}, "invalid_target"),
             ({"action": "segment_add", "contact_ids": [3], "segment_id": True}, "invalid_target"),
             ({"action": "campaign_add", "contact_ids": [3], "segment_id": 5}, "invalid_payload"),

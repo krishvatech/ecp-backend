@@ -11,6 +11,8 @@ from rest_framework.views import APIView
 from friends.models import Notification
 
 from .contact_export_services import list_user_jobs
+from .company_export_services import list_user_jobs as list_user_company_export_jobs
+from .form_submission_export_services import list_user_jobs as list_user_submission_export_jobs
 from .marketing_permissions import HasMarketingHubAccess
 
 LIMIT = 20
@@ -42,6 +44,8 @@ class NewsletterAdminMarketingNotificationListView(APIView):
         # Settles any of this admin's exports that will never finish, so they
         # are reported here without anyone having to open the export dialog.
         list_user_jobs(request.user)
+        list_user_submission_export_jobs(request.user)
+        list_user_company_export_jobs(request.user)
         notifications = marketing_notifications(request.user)
         response = Response({
             "unread": notifications.filter(is_read=False).count(),

@@ -14,8 +14,15 @@ Native Mautic 7.1.3 facts these rules rely on (verified against local Mautic):
 * A field's alias names its results column, so type and alias never change.
 * Forms with conditional fields are re-ordered wrongly by a PATCH; their fields
   are left to Mautic.
-* Field deletion is not offered: the native field-delete endpoint did not delete
-  over the API in testing, and deleting would also orphan submission data.
+* Deleting a field drops its column from the Form's results table, so the
+  stored values of every submission are lost with it. Removal therefore needs an
+  explicit confirmation when submissions exist, and is refused while a Campaign
+  condition checks the field. The bridge clears the Form's cached HTML, which
+  the native delete leaves showing the removed field.
+* Free text and free HTML content is rendered raw (scripts included) on the
+  public Form, which IMAA sites embed, so active content is refused.
+* Uploads stay private (only Mautic users may download them), accept documents
+  and images only, and never set the contact's profile image.
 """
 
 from __future__ import annotations
@@ -25,7 +32,9 @@ from datetime import date
 from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import validate_email
+from django.core.validators import URLValidator, validate_email
+
+from .page_html_policy import find_active_content
 
 LABEL_MAX_LENGTH = 255
 TEXT_MAX_LENGTH = 255
@@ -37,22 +46,65 @@ FIELD_TYPES = {
     "text": "Text",
     "email": "Email",
     "tel": "Telephone",
+    "url": "Website (URL)",
     "textarea": "Text area",
     "number": "Number",
+    "slider": "Slider",
     "select": "Dropdown",
     "radiogrp": "Radio group",
     "checkboxgrp": "Checkbox group",
     "date": "Date",
+    "datetime": "Date and time",
     "country": "Country",
+    "file": "File upload",
     "hidden": "Hidden",
+    "captcha": "CAPTCHA",
+    "freetext": "Text block",
+    "freehtml": "HTML block",
+    "pagebreak": "Page break",
     "button": "Submit button",
 }
 OPTION_TYPES = {"select": "list", "radiogrp": "optionlist", "checkboxgrp": "optionlist"}
-PLACEHOLDER_TYPES = {"text", "email", "tel", "date", "number", "select", "country"}
-NO_REQUIRED = {"button", "hidden"}
-NO_HELP = {"button", "hidden"}
-NO_DEFAULT = {"button", "checkboxgrp", "country"}
-NO_MAPPING = {"button"}
+PLACEHOLDER_TYPES = {"text", "email", "tel", "url", "date", "datetime", "number", "select", "country", "captcha"}
+NO_REQUIRED = {"button", "hidden", "captcha", "freetext", "freehtml", "pagebreak"}
+NO_HELP = {"button", "hidden", "freetext", "freehtml", "pagebreak"}
+NO_DEFAULT = {"button", "checkboxgrp", "country", "slider", "datetime", "file", "captcha", "freetext", "freehtml", "pagebreak"}
+NO_MAPPING = {"button", "file", "captcha", "freetext", "freehtml", "pagebreak"}
+# Fields that hold no visitor value (as the bridge counts them for publication).
+NON_INPUT_TYPES = {"button", "freetext", "freehtml", "pagebreak", "captcha", "hidden"}
+# Removing these never loses submitted values.
+NO_VALUE_TYPES = {"button", "freetext", "freehtml", "pagebreak"}
+
+FILE_EXTENSIONS = ("pdf", "doc", "docx", "odt", "rtf", "txt", "csv", "xls", "xlsx", "ods", "ppt", "pptx", "odp",
+                   "jpg", "jpeg", "png", "gif", "webp")
+DEFAULT_FILE_EXTENSIONS = ["pdf", "doc", "docx", "jpg", "jpeg", "png"]
+MAX_FILE_SIZE_MB = 10
+CONTENT_MAX_LENGTH = 20000
+SLIDER_LIMIT = 1000000
+
+# Type-specific settings: ECP key -> (native property, label, kind, default).
+EXTRA_SETTINGS = {
+    "slider": [
+        ("minValue", "min", "Minimum", "integer", "0"),
+        ("maxValue", "max", "Maximum", "integer", "100"),
+        ("step", "step", "Step", "integer", "1"),
+    ],
+    "file": [
+        ("allowedExtensions", "allowed_file_extensions", "Allowed file types", "extensions", DEFAULT_FILE_EXTENSIONS),
+        ("maxFileSize", "allowed_file_size", "Maximum size (MB)", "integer", "5"),
+    ],
+    "captcha": [
+        ("captchaAnswer", "captcha", "Answer (leave empty for a hidden spam trap)", "text", ""),
+        ("errorMessage", "errorMessage", "Wrong-answer message", "text", ""),
+    ],
+    "freetext": [("content", "text", "Text", "html", "")],
+    "freehtml": [("content", "text", "HTML", "html", "")],
+    "pagebreak": [
+        ("nextLabel", "next_page_label", "Next button label", "text", "Continue"),
+        ("prevLabel", "prev_page_label", "Back button label", "text", "Back"),
+    ],
+}
+EXTRA_KEYS = {entry[0] for entries in EXTRA_SETTINGS.values() for entry in entries}
 
 # Which native Contact field types each Form field type may fill.
 COMPATIBLE_CONTACT_TYPES = {
@@ -65,6 +117,9 @@ COMPATIBLE_CONTACT_TYPES = {
     "radiogrp": {"text", "lookup", "select", "boolean"},
     "checkboxgrp": {"text", "multiselect"},
     "date": {"date", "datetime"},
+    "datetime": {"datetime", "date"},
+    "url": {"url", "text"},
+    "slider": {"number"},
     "country": {"country"},
     "hidden": {"text", "lookup", "url", "number", "select"},
 }
@@ -89,12 +144,17 @@ NATIVE_PROPERTY_DEFAULTS = {
     "country": {"placeholder": "", "multiple": "0"},
     "radiogrp": {"syncList": "0"},
     "checkboxgrp": {"syncList": "0"},
+    "url": {"placeholder": ""},
+    "datetime": {"placeholder": ""},
+    "captcha": {"placeholder": ""},
+    # Uploads are private and never become the contact's profile image.
+    "file": {"public": "0", "profile_image": "0"},
 }
 
 EDITABLE_KEYS = {
     "label", "isRequired", "helpMessage", "validationMessage", "defaultValue",
     "mappedField", "placeholder", "precision", "multiple", "options",
-}
+} | EXTRA_KEYS
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -158,9 +218,21 @@ def normalize_field(field: dict[str, Any], *, locked: str = "") -> dict[str, Any
         "precision": str(properties.get("precision") if properties.get("precision") is not None else ""),
         "multiple": _bool(properties.get("multiple", False)),
         "options": native_options(field),
+        **_extra_values(field_type, properties),
         "editable": not lock,
         "lockReason": lock,
     }
+
+
+def _extra_values(field_type: str, properties: dict[str, Any]) -> dict[str, Any]:
+    values = {}
+    for key, native, _label, kind, _default in EXTRA_SETTINGS.get(field_type, []):
+        raw = properties.get(native)
+        if kind == "extensions":
+            values[key] = [str(item) for item in raw] if isinstance(raw, list) else []
+        else:
+            values[key] = "" if raw is None else str(raw)
+    return values
 
 
 def contact_field_choices(rows) -> list[dict[str, Any]]:
@@ -205,6 +277,14 @@ def field_type_catalogue() -> list[dict[str, Any]]:
             "mapping": field_type not in NO_MAPPING,
             "precision": field_type == "number",
             "multiple": field_type == "select",
+            "input": field_type not in NON_INPUT_TYPES,
+            "settings": [
+                {"key": key, "label": setting_label, "kind": kind, "default": default,
+                 **({"choices": list(FILE_EXTENSIONS)} if kind == "extensions" else {}),
+                 **({"min": 1, "max": MAX_FILE_SIZE_MB} if key == "maxFileSize" else {}),
+                 **({"maxLength": CONTENT_MAX_LENGTH} if kind == "html" else {})}
+                for key, _native, setting_label, kind, default in EXTRA_SETTINGS.get(field_type, [])
+            ],
         }
         for field_type, label in FIELD_TYPES.items()
     ]
@@ -290,6 +370,11 @@ def _check_default(field_type: str, default: str, options: list[dict[str, str]])
             date.fromisoformat(default)
         except ValueError:
             raise FieldPolicyError("The default must be a date (YYYY-MM-DD).", field="defaultValue") from None
+    if field_type == "url":
+        try:
+            URLValidator(schemes=["http", "https"])(default)
+        except DjangoValidationError:
+            raise FieldPolicyError("The default must be a web address (https://…).", field="defaultValue") from None
 
 
 def _check_mapping(field_type: str, target: str, contact_fields: dict[str, str], others: list[dict[str, Any]]) -> None:
@@ -345,6 +430,61 @@ def _state(field_type: str, data: dict, current: dict[str, Any] | None) -> dict[
         state["options"] = _options(data.get("options"))
     elif field_type in OPTION_TYPES and current is None:
         raise FieldPolicyError("Add at least one option.", field="options")
+    state.update(_extras(field_type, data, base if current else None))
+    return state
+
+
+def _integer(data: dict, key: str, label: str, *, low: int, high: int) -> str:
+    raw = data.get(key)
+    text = str(raw).strip() if raw is not None and not isinstance(raw, bool) else ""
+    if not re.fullmatch(r"-?\d{1,7}", text) or not low <= int(text) <= high:
+        raise FieldPolicyError(f"{label} must be a whole number from {low} to {high}.", field=key)
+    return str(int(text))
+
+
+def _extras(field_type: str, data: dict, current: dict[str, Any] | None) -> dict[str, Any]:
+    """Type-specific settings after applying ``data``, checked as a whole."""
+    state = {}
+    for key, _native, label, kind, default in EXTRA_SETTINGS.get(field_type, []):
+        if key not in data:
+            state[key] = current[key] if current is not None else default
+            continue
+        if kind == "integer":
+            low, high = (1, MAX_FILE_SIZE_MB) if key == "maxFileSize" else (-SLIDER_LIMIT, SLIDER_LIMIT)
+            state[key] = _integer(data, key, label, low=low, high=high)
+        elif kind == "extensions":
+            value = data.get(key)
+            if not isinstance(value, list) or not value:
+                raise FieldPolicyError("Choose at least one allowed file type.", field=key)
+            chosen = []
+            for item in value:
+                text = str(item).strip().lower().lstrip(".")
+                if isinstance(item, bool) or text not in FILE_EXTENSIONS:
+                    raise FieldPolicyError("Allowed file types: " + ", ".join(FILE_EXTENSIONS) + ".", field=key)
+                if text not in chosen:
+                    chosen.append(text)
+            state[key] = chosen
+        elif kind == "html":
+            value = data.get(key)
+            if not isinstance(value, str):
+                raise FieldPolicyError(f"{label} must be text.", field=key)
+            if len(value) > CONTENT_MAX_LENGTH:
+                raise FieldPolicyError(f"{label} must be {CONTENT_MAX_LENGTH} characters or fewer.", field=key)
+            findings = find_active_content(value)
+            if findings:
+                raise FieldPolicyError(
+                    f"{label} contains {findings[0]}. Forms are embedded on other sites, so code is not allowed.",
+                    code="form_field_active_content", field=key,
+                )
+            state[key] = value.strip()
+        else:
+            state[key] = _text(data, key, label)
+    if field_type == "slider":
+        low, high, step = int(state["minValue"]), int(state["maxValue"]), int(state["step"])
+        if low >= high:
+            raise FieldPolicyError("The maximum must be greater than the minimum.", field="maxValue")
+        if not 1 <= step <= high - low:
+            raise FieldPolicyError("The step must be at least 1 and fit within the range.", field="step")
     return state
 
 
@@ -361,7 +501,8 @@ def _reject_unsupported(field_type: str, data: dict) -> None:
                 or (key == "placeholder" and field_type not in PLACEHOLDER_TYPES and data[key]) \
                 or (key == "precision" and field_type != "number" and data[key] not in (None, "")) \
                 or (key == "multiple" and field_type != "select" and _bool(data[key])) \
-                or (key == "options" and field_type not in OPTION_TYPES):
+                or (key == "options" and field_type not in OPTION_TYPES) \
+                or (key in EXTRA_KEYS and key not in {entry[0] for entry in EXTRA_SETTINGS.get(field_type, [])}):
             not_for_type.append(key)
     if not_for_type:
         raise FieldPolicyError(
@@ -390,6 +531,9 @@ def _native(field_type: str, state: dict[str, Any], keys: set[str]) -> dict[str,
         properties["multiple"] = "1" if state["multiple"] else "0"
     if "options" in keys and field_type in OPTION_TYPES:
         properties[OPTION_TYPES[field_type]] = {"list": state["options"]}
+    for key, native_key, _label, _kind, _default in EXTRA_SETTINGS.get(field_type, []):
+        if key in keys:
+            properties[native_key] = state[key]
     if properties:
         native["properties"] = properties
     return native
@@ -430,7 +574,8 @@ def plan_new_field(data, form: dict[str, Any], contact_fields: dict[str, str]) -
         if not isinstance(position, int) or isinstance(position, bool) or not 0 <= position <= len(fields):
             raise FieldPolicyError("Position must be a field index within the Form.", field="position")
 
-    keys = {key for key in state if key in data} | {"label"}
+    # A new field stores every type-specific setting (defaults included).
+    keys = {key for key in state if key in data} | {"label"} | {entry[0] for entry in EXTRA_SETTINGS.get(field_type, [])}
     native = {"type": field_type, "alias": alias, **_native(field_type, state, keys)}
     defaults = NATIVE_PROPERTY_DEFAULTS.get(field_type)
     if defaults:
@@ -528,3 +673,51 @@ def field_matches(field: dict[str, Any], native: dict[str, Any]) -> bool:
         elif str(field.get(key) or "") != str(value or ""):
             return False
     return True
+
+
+# Removal --------------------------------------------------------------------------
+
+
+def plan_field_removal(field: dict[str, Any], form: dict[str, Any], *, submissions: int, confirmed: bool) -> None:
+    """Refuse a removal that would break a published Form, or lose stored
+    submission values without an explicit confirmation. (Campaign conditions
+    that check the field are refused by the bridge, which can read them.)"""
+    remaining = [str(f.get("type") or "") for f in ordered_fields(form) if str(f.get("id")) != str(field.get("id"))]
+    if _bool(form.get("isPublished")):
+        if "button" not in remaining:
+            raise FieldPolicyError("A published Form needs its submit button. Unpublish the Form first.",
+                                   code="form_field_removal_blocked")
+        if not any(field_type not in NON_INPUT_TYPES for field_type in remaining):
+            raise FieldPolicyError("A published Form needs at least one field visitors can fill in. Unpublish the Form first.",
+                                   code="form_field_removal_blocked")
+    if submissions > 0 and not confirmed and str(field.get("type") or "") not in NO_VALUE_TYPES:
+        raise FieldPolicyError(
+            f"The Form has {submissions} stored submission(s). Removing this field permanently deletes its value "
+            "from every one of them. Confirm the removal to continue.",
+            code="form_field_removal_unconfirmed",
+        )
+
+
+def removal_problems(before: dict[str, Any], after: dict[str, Any], field_id: str) -> list[str]:
+    """What is wrong with ``after`` beyond the one field being gone."""
+    problems = []
+    after_fields = {str(f.get("id")): f for f in ordered_fields(after)}
+    if str(field_id) in after_fields:
+        problems.append("the field is still on the Form")
+    kept = [f for f in ordered_fields(before) if str(f.get("id")) != str(field_id)]
+    for field in kept:
+        stored = after_fields.get(str(field.get("id")))
+        if stored is None:
+            problems.append(f"field {field.get('id')} is missing")
+        elif _comparable(field) != _comparable(stored):
+            problems.append(f"field {field.get('id')} changed")
+    if [str(f.get("id")) for f in ordered_fields(after)] != [str(f.get("id")) for f in kept if str(f.get("id")) in after_fields]:
+        problems.append("the field order changed")
+    if set(after_fields) - {str(f.get("id")) for f in kept}:
+        problems.append("a field was added")
+    if [a.get("id") for a in before.get("actions") or []] != [a.get("id") for a in after.get("actions") or []]:
+        problems.append("submit actions changed")
+    for key in ("postAction", "postActionProperty", "isPublished", "formType", "name"):
+        if before.get(key) != after.get(key):
+            problems.append(f"{key} changed")
+    return problems

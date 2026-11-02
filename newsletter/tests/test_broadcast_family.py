@@ -50,11 +50,15 @@ class FamilyRulesTests(TestCase):
 
     def test_variants_share_sender_and_segments_translations_share_sender(self):
         client = Mock()
-        client.get_email.return_value = email(80, variantChildren=[email(81)], translationChildren=[email(82, language="fr")])
+        client.get_email.return_value = email(
+            80, variantChildren=[email(81)], translationChildren=[email(82, language="fr")], replyToAddress="team@x.test",
+            utmTags={"utmSource": "imaa", "utmMedium": "email"}, assetAttachments=[{"id": 5, "title": "Brochure"}])
         sync_family_shared_fields(client, "80", {"fromName": "IMAA", "fromAddress": "news@x.test", "lists": [7], "subject": "S"})
+        delivery = {"replyToAddress": "team@x.test", "utmTags": {"utmSource": "imaa", "utmMedium": "email", "utmCampaign": "", "utmContent": ""},
+                    "assetAttachments": ["5"]}
         self.assertEqual([c.args for c in client.update_email.call_args_list], [
-            ("81", {"fromName": "IMAA", "fromAddress": "news@x.test", "emailType": "list", "lists": [7]}),
-            ("82", {"fromName": "IMAA", "fromAddress": "news@x.test", "emailType": "list"}),
+            ("81", {"fromName": "IMAA", "fromAddress": "news@x.test", **delivery, "emailType": "list", "lists": [7]}),
+            ("82", {"fromName": "IMAA", "fromAddress": "news@x.test", **delivery, "emailType": "list"}),
         ])
 
     @override_settings(MAUTIC_SYNC_ENABLED=True)

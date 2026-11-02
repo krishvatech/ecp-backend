@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import marketing_cache
+from .email_delivery_options import normalize_delivery_options, parse_delivery_options
 from .campaign_services import deliver_temporary_test_email
 from .email_design_services import (
     TemplateSaveInProgress,
@@ -71,6 +72,10 @@ _TEMPLATE_FIELDS = {
     "category",
     "template",
     "language",
+    # Delivery options Mautic keeps on the email (email_delivery_options).
+    "replyToAddress",
+    "utmTags",
+    "assetAttachments",
 }
 
 # Two-letter languages only: Mautic 7.1.3 matches a contact's locale by its
@@ -135,6 +140,7 @@ def _normalize_template(email: dict[str, Any]) -> dict[str, Any]:
         "dateModified": email.get("dateModified"),
         "sentCount": email.get("sentCount"),
         "readCount": email.get("readCount"),
+        **normalize_delivery_options(email),
         **_family_fields(email),
     }
 
@@ -237,6 +243,9 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
         if not _LANGUAGE_RE.match(language):
             raise ValueError("Language must be a locale code such as en, fr or fr_CA.")
         payload["language"] = language
+
+    # DeliveryOptionsError is a ValueError: it reaches the caller like the rest.
+    payload.update(parse_delivery_options(data))
 
     if "isPublished" in data:
         payload["isPublished"] = _parse_bool(

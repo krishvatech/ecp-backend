@@ -84,6 +84,25 @@ from .form_views import (
     NewsletterAdminFormUnpublishView,
     NewsletterAdminFormUsageView,
 )
+from .company_transfer_views import (
+    NewsletterAdminCompanyExportDetailView,
+    NewsletterAdminCompanyExportDownloadView,
+    NewsletterAdminCompanyExportListCreateView,
+    NewsletterAdminCompanyImportDetailView,
+    NewsletterAdminCompanyImportListCreateView,
+    NewsletterAdminCompanyImportPreviewView,
+)
+from .contact_email_views import NewsletterAdminContactSendEmailView
+from .email_delivery_views import (
+    NewsletterAdminCampaignDeliveryOptionsView,
+    NewsletterAdminCampaignLinkClicksView,
+    NewsletterAdminTemplateLinkClicksView,
+)
+from .form_submission_export_views import (
+    NewsletterAdminFormSubmissionExportDetailView,
+    NewsletterAdminFormSubmissionExportDownloadView,
+    NewsletterAdminFormSubmissionExportListCreateView,
+)
 from .page_views import (
     NewsletterAdminPageAbTestView,
     NewsletterAdminPageCategoriesView,
@@ -116,7 +135,9 @@ from .native_campaign_views import (
     NewsletterAdminMauticCampaignBuilderView,
     NewsletterAdminMauticCampaignCapabilitiesView,
     NewsletterAdminMauticCampaignChoicesView,
+    NewsletterAdminMauticCampaignContactsView,
     NewsletterAdminMauticCampaignDetailView,
+    NewsletterAdminMauticCampaignStatsView,
     NewsletterAdminMauticCampaignDuplicateView,
     NewsletterAdminMauticCampaignEventView,
     NewsletterAdminMauticCampaignListCreateView,
@@ -294,6 +315,16 @@ urlpatterns = [
         name="newsletter-admin-campaign-version",
     ),
     path(
+        "newsletter/admin/campaigns/<uuid:uuid>/delivery-options/",
+        NewsletterAdminCampaignDeliveryOptionsView.as_view(),
+        name="newsletter-admin-campaign-delivery-options",
+    ),
+    path(
+        "newsletter/admin/campaigns/<uuid:uuid>/link-clicks/",
+        NewsletterAdminCampaignLinkClicksView.as_view(),
+        name="newsletter-admin-campaign-link-clicks",
+    ),
+    path(
         "newsletter/admin/campaigns/<uuid:uuid>/preview/",
         NewsletterAdminCampaignPreviewView.as_view(),
         name="newsletter-admin-campaign-preview",
@@ -370,6 +401,16 @@ urlpatterns = [
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/events/<str:event_id>/",
         NewsletterAdminMauticCampaignEventView.as_view(),
         name="newsletter-admin-mautic-campaign-event",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/contacts/",
+        NewsletterAdminMauticCampaignContactsView.as_view(),
+        name="newsletter-admin-mautic-campaign-contacts",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/stats/",
+        NewsletterAdminMauticCampaignStatsView.as_view(),
+        name="newsletter-admin-mautic-campaign-stats",
     ),
     path(
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/builder/",
@@ -568,6 +609,22 @@ urlpatterns = [
         NewsletterAdminFormSubmissionListView.as_view(),
         name="newsletter-admin-form-submission-list",
     ),
+    # Static "submissions/exports/" ranks above the submission-id route.
+    path(
+        "newsletter/admin/forms/<str:form_id>/submissions/exports/",
+        NewsletterAdminFormSubmissionExportListCreateView.as_view(),
+        name="newsletter-admin-form-submission-export-list",
+    ),
+    path(
+        "newsletter/admin/form-submission-exports/<str:job_id>/",
+        NewsletterAdminFormSubmissionExportDetailView.as_view(),
+        name="newsletter-admin-form-submission-export-detail",
+    ),
+    path(
+        "newsletter/admin/form-submission-exports/<str:job_id>/download/",
+        NewsletterAdminFormSubmissionExportDownloadView.as_view(),
+        name="newsletter-admin-form-submission-export-download",
+    ),
     path(
         "newsletter/admin/forms/<str:form_id>/submissions/<str:submission_id>/",
         NewsletterAdminFormSubmissionDetailView.as_view(),
@@ -672,6 +729,11 @@ urlpatterns = [
         "newsletter/admin/templates/<str:template_id>/test-send/",
         NewsletterAdminTemplateTestSendView.as_view(),
         name="newsletter-admin-template-test-send",
+    ),
+    path(
+        "newsletter/admin/templates/<str:template_id>/link-clicks/",
+        NewsletterAdminTemplateLinkClicksView.as_view(),
+        name="newsletter-admin-template-link-clicks",
     ),
     path(
         "newsletter/admin/templates/<str:template_id>/usage/",
@@ -838,6 +900,11 @@ urlpatterns = [
         "newsletter/admin/tags/",
         NewsletterAdminTagListView.as_view(),
         name="newsletter-admin-tag-list",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/send-email/",
+        NewsletterAdminContactSendEmailView.as_view(),
+        name="newsletter-admin-contact-send-email",
     ),
     path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/campaigns/",
@@ -1048,6 +1115,37 @@ urlpatterns = [
         "newsletter/admin/companies/",
         NewsletterAdminCompanyListCreateView.as_view(),
         name="newsletter-admin-company-list",
+    ),
+    # Static "companies/imports|exports" rank above the company-id routes.
+    path(
+        "newsletter/admin/companies/imports/",
+        NewsletterAdminCompanyImportListCreateView.as_view(),
+        name="newsletter-admin-company-import-list",
+    ),
+    path(
+        "newsletter/admin/companies/imports/preview/",
+        NewsletterAdminCompanyImportPreviewView.as_view(),
+        name="newsletter-admin-company-import-preview",
+    ),
+    path(
+        "newsletter/admin/companies/imports/<str:import_id>/",
+        NewsletterAdminCompanyImportDetailView.as_view(),
+        name="newsletter-admin-company-import-detail",
+    ),
+    path(
+        "newsletter/admin/companies/exports/",
+        NewsletterAdminCompanyExportListCreateView.as_view(),
+        name="newsletter-admin-company-export-list",
+    ),
+    path(
+        "newsletter/admin/companies/exports/<str:job_id>/",
+        NewsletterAdminCompanyExportDetailView.as_view(),
+        name="newsletter-admin-company-export-detail",
+    ),
+    path(
+        "newsletter/admin/companies/exports/<str:job_id>/download/",
+        NewsletterAdminCompanyExportDownloadView.as_view(),
+        name="newsletter-admin-company-export-download",
     ),
     path(
         "newsletter/admin/companies/<str:company_id>/",

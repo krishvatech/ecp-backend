@@ -54,18 +54,22 @@ from .operations import (
     CONTACT_DNC_REMOVE,
     CONTACT_IMPORT_CREATE,
     CONTACT_NOTE_CREATE,
+    COMPANY_IMPORT_CREATE,
     CONTACT_TAG_ADD,
+    EMAIL_CONTACT_SEND,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
     FIELD_CREATE,
     FIELD_DELETE,
     FIELD_UPDATE,
     FORM_ACTION_CREATE,
+    FORM_ACTION_DELETE,
     FORM_ACTION_REORDER,
     FORM_ACTION_UPDATE,
     FORM_CREATE,
     FORM_DELETE,
     FORM_FIELD_CREATE,
+    FORM_FIELD_DELETE,
     FORM_FIELD_REORDER,
     FORM_FIELD_UPDATE,
     FORM_PUBLISH,
@@ -633,6 +637,39 @@ class MauticClient:
                 "Mautic contact import creation returned an invalid response"
             )
         return contact_import, bool(data.get("duplicate"))
+
+    def create_company_import(self, *, file_name: str, content: bytes, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Queue a native Mautic company import as the acting admin (asserted
+        user only). Returns ``(import, duplicate)`` like the contact import."""
+        if not self._uses_asserted_user():
+            raise PermanentMauticError("Company imports require per-user Mautic execution")
+        response = self._bridge_request(
+            "POST",
+            "ecp/bridge/companies/imports/new",
+            operation=COMPANY_IMPORT_CREATE,
+            data={"config": json.dumps(config)},
+            files={"file": (file_name, content, "text/csv")},
+        )
+        data = self._json_object(response, "Mautic company import creation")
+        company_import = data.get("import")
+        if not isinstance(company_import, dict) or not company_import.get("id"):
+            raise TemporaryMauticError("Mautic company import creation returned an invalid response")
+        return company_import, bool(data.get("duplicate"))
+
+    def list_company_imports(self, *, limit: int = 25, start: int = 0) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "ecp/companies/imports", params={"limit": limit, "start": start}),
+                                 "Mautic company import list")
+        if not isinstance(data.get("imports"), list):
+            raise TemporaryMauticError("Mautic company import list returned an invalid response")
+        return data
+
+    def get_company_import(self, import_id) -> dict[str, Any]:
+        normalized = self._numeric_id(import_id, "import")
+        data = self._json_object(self._request("GET", f"ecp/companies/imports/{normalized}"), "Mautic company import")
+        company_import = data.get("import")
+        if not isinstance(company_import, dict) or not company_import.get("id"):
+            raise TemporaryMauticError("Mautic company import returned an invalid response")
+        return company_import
 
     def list_contact_imports(
         self,
@@ -2044,12 +2081,23 @@ class MauticClient:
         )
 
     @staticmethod
+    def _email_body(payload: dict[str, Any]) -> dict[str, Any]:
+        """Request body for an email update. Form data, except when attachments
+        are cleared: a form cannot send an empty list (Mautic refuses an empty
+        value as an invalid choice), JSON can."""
+        if "assetAttachments" in payload and not payload["assetAttachments"]:
+            return {"json": payload}
+        return {"data": MauticClient._email_form_data(payload)}
+
+    @staticmethod
     def _email_form_data(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         """Encode Mautic email form collections using Symfony array notation."""
         form_data = []
         for key, value in payload.items():
             if isinstance(value, (list, tuple)):
                 form_data.extend((f"{key}[]", item) for item in value)
+            elif isinstance(value, dict):
+                form_data.extend((f"{key}[{name}]", item) for name, item in value.items())
             elif isinstance(value, bool):
                 form_data.append((key, "1" if value else "0"))
             else:
@@ -2248,13 +2296,13 @@ class MauticClient:
                 "PATCH",
                 f"ecp/bridge/emails/{email_id}/edit",
                 operation=EMAIL_UPDATE,
-                data=self._email_form_data(payload),
+                **self._email_body(payload),
             )
         else:
             response = self._request(
                 "PATCH",
                 f"emails/{email_id}/edit",
-                data=self._email_form_data(payload),
+                **self._email_body(payload),
             )
         return self._email_from_response(response, "Mautic email update")
 
@@ -2465,7 +2513,7 @@ class MauticClient:
                 "PATCH",
                 f"ecp/bridge/templates/{email_id}/edit",
                 operation=TEMPLATE_UPDATE,
-                data=self._email_form_data(template_payload),
+                **self._email_body(template_payload),
             )
             return self._require_template_email(
                 self._email_from_response(response, "Mautic email template update"),
@@ -2950,6 +2998,27 @@ class MauticClient:
             raise TemporaryMauticError("Mautic user list returned an invalid response")
         return data
 
+    def get_campaign_contacts(self, campaign_id, *, start: int = 0, limit: int = 25, search: str = "", timeout=None) -> dict[str, Any]:
+        """Read-only bridge: the Campaign's current contacts, newest first."""
+        campaign = self._numeric_id(campaign_id, "campaign")
+        params: dict[str, Any] = {"start": int(start), "limit": int(limit)}
+        if search:
+            params["search"] = search
+        data = self._json_object(
+            self._request("GET", f"ecp/campaigns/{campaign}/contacts", params=params, timeout=timeout), "Mautic campaign contacts"
+        )
+        if not isinstance(data.get("contacts"), list):
+            raise TemporaryMauticError("Mautic campaign contacts returned an invalid response")
+        return data
+
+    def get_campaign_stats(self, campaign_id, *, timeout=None) -> dict[str, Any]:
+        """Read-only bridge: per-step counts as Mautic's Campaign page shows them."""
+        campaign = self._numeric_id(campaign_id, "campaign")
+        data = self._json_object(self._request("GET", f"ecp/campaigns/{campaign}/stats", timeout=timeout), "Mautic campaign stats")
+        if not isinstance(data.get("events"), list) or not isinstance(data.get("contacts"), dict):
+            raise TemporaryMauticError("Mautic campaign stats returned an invalid response")
+        return data
+
     def get_campaign(self, campaign_id: int | str) -> dict[str, Any]:
         campaign_id = str(campaign_id or "").strip()
         if not campaign_id:
@@ -3272,7 +3341,7 @@ class MauticClient:
             json={"order": [int(self._numeric_id(item, "form field")) for item in order]},
         )
 
-    def create_form_action(self, form_id, action: dict[str, Any], position: int | None = None) -> dict[str, Any]:
+    def create_form_action(self, form_id, action: dict[str, Any], position: int | None = None, *, timeout=None) -> dict[str, Any]:
         """Add one submit action; the bridge re-sends every existing action."""
         form = self._numeric_id(form_id, "form")
         body: dict[str, Any] = {"action": action}
@@ -3280,15 +3349,15 @@ class MauticClient:
             body["position"] = int(position)
         return self._form_bridge_request(
             "POST", f"ecp/bridge/forms/{form}/actions/new",
-            operation=FORM_ACTION_CREATE, context="Mautic form action creation", json=body,
+            operation=FORM_ACTION_CREATE, context="Mautic form action creation", json=body, timeout=timeout,
         )
 
-    def update_form_action(self, form_id, action_id, changes: dict[str, Any]) -> dict[str, Any]:
+    def update_form_action(self, form_id, action_id, changes: dict[str, Any], *, timeout=None) -> dict[str, Any]:
         form = self._numeric_id(form_id, "form")
         action = self._numeric_id(action_id, "form action")
         return self._form_bridge_request(
             "PATCH", f"ecp/bridge/forms/{form}/actions/{action}/edit",
-            operation=FORM_ACTION_UPDATE, context="Mautic form action update", json={"action": changes},
+            operation=FORM_ACTION_UPDATE, context="Mautic form action update", json={"action": changes}, timeout=timeout,
         )
 
     def reorder_form_actions(self, form_id, order: list) -> dict[str, Any]:
@@ -3297,6 +3366,25 @@ class MauticClient:
             "POST", f"ecp/bridge/forms/{form}/actions/reorder",
             operation=FORM_ACTION_REORDER, context="Mautic form action reorder",
             json={"order": [int(self._numeric_id(item, "form action")) for item in order]},
+        )
+
+    def delete_form_field(self, form_id, field_id, *, confirm: bool = False) -> dict[str, Any]:
+        """Remove one field. Mautic drops its results column, so the bridge
+        needs ``confirm`` when the Form has stored submissions."""
+        form = self._numeric_id(form_id, "form")
+        field = self._numeric_id(field_id, "form field")
+        return self._form_bridge_request(
+            "DELETE", f"ecp/bridge/forms/{form}/fields/{field}/delete",
+            operation=FORM_FIELD_DELETE, context="Mautic form field removal",
+            json={"confirm": 1} if confirm else None,
+        )
+
+    def delete_form_action(self, form_id, action_id) -> dict[str, Any]:
+        form = self._numeric_id(form_id, "form")
+        action = self._numeric_id(action_id, "form action")
+        return self._form_bridge_request(
+            "DELETE", f"ecp/bridge/forms/{form}/actions/{action}/delete",
+            operation=FORM_ACTION_DELETE, context="Mautic form action removal",
         )
 
     def get_form_usage(self, form_id, *, timeout=None) -> dict[str, Any]:
@@ -3309,11 +3397,12 @@ class MauticClient:
             raise TemporaryMauticError("Mautic form usage returned an invalid response")
         return usage
 
-    def list_form_submissions(self, form_id, *, start: int = 0, limit: int = 25, timeout=None) -> dict[str, Any]:
+    def list_form_submissions(self, form_id, *, start: int = 0, limit: int = 25, timeout=None,
+                              newest_first: bool = True) -> dict[str, Any]:
         form = self._numeric_id(form_id, "form")
         response = self._request(
             "GET", f"forms/{form}/submissions",
-            params={"start": int(start), "limit": int(limit), "orderBy": "s.id", "orderByDir": "DESC"},
+            params={"start": int(start), "limit": int(limit), "orderBy": "s.id", "orderByDir": "DESC" if newest_first else "ASC"},
             timeout=timeout,
         )
         data = self._json_object(response, "Mautic form submissions")
@@ -3996,6 +4085,19 @@ class MauticClient:
                 f"segments/{segment_id}/contact/{contact_id}/remove",
             )
 
+    def send_template_to_contact(self, email_id, contact_id) -> dict[str, Any]:
+        """Send one published template to one contact as the acting admin. The
+        bridge refuses an email Do Not Contact (Mautic's own API ignores it)."""
+        email = self._numeric_id(email_id, "email")
+        contact = self._numeric_id(contact_id, "contact")
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Sending email to a contact requires per-user Mautic identity")
+        response = self._bridge_request("POST", f"ecp/bridge/templates/{email}/contact/{contact}/send", operation=EMAIL_CONTACT_SEND)
+        data = self._json_object(response, "Mautic email send to contact")
+        if not data.get("success"):
+            raise TemporaryMauticError("Mautic did not confirm the email send")
+        return data
+
     def add_contact_tag(self, contact_id: int | str, tag: str, current_tags: list[str]) -> dict[str, Any]:
         contact_id = str(contact_id or "").strip()
         if not contact_id:
@@ -4005,7 +4107,9 @@ class MauticClient:
                 "PATCH",
                 f"ecp/bridge/contacts/{contact_id}/tags/add",
                 operation=CONTACT_TAG_ADD,
-                data={"tags": current_tags},
+                # "tags[]": PHP keeps only the last of repeated plain keys, so
+                # with "tags" Mautic would add just one tag.
+                data=[("tags[]", tag) for tag in current_tags],
             )
             data = self._json_object(response, "Mautic contact tag add")
             contact = data.get("contact")

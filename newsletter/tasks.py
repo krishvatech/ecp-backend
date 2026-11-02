@@ -103,7 +103,21 @@ def run_report_export(job_id: str):
     run_export(job_id)
 
 
-# Also removes report export files: they share the private export prefix.
+@shared_task(name="newsletter.run_form_submission_export", time_limit=1800, soft_time_limit=1740)
+def run_form_submission_export(job_id: str):
+    from .form_submission_export_services import run_export
+
+    run_export(job_id)
+
+
+@shared_task(name="newsletter.run_company_export", time_limit=1800, soft_time_limit=1740)
+def run_company_export(job_id: str):
+    from .company_export_services import run_export
+
+    run_export(job_id)
+
+
+# Also removes report, form submission and company export files: they share the private export prefix.
 @shared_task(name="newsletter.purge_contact_exports")
 def purge_contact_exports():
     from .contact_export_services import purge_expired_files

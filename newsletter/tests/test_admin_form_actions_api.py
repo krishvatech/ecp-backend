@@ -66,9 +66,11 @@ class ActionRuleTests(SimpleTestCase):
             ({"type": "lead.remove_do_not_contact", "name": "x"}, "form_action_prohibited"),
             ({"type": "email.send.lead", "name": "x"}, "form_action_prohibited"),
             ({"type": "lead.changelist", "name": "x"}, "form_action_deferred"),
-            ({"type": "form.repost", "name": "x"}, "unsupported_form_action_type"),
-            ({"type": "lead.updatelead", "name": "x"}, "unsupported_form_action_type"),
-            ({"type": "email.send.user", "name": "x"}, "unsupported_form_action_type"),
+            ({"type": "plugin.leadpush", "name": "x"}, "unsupported_form_action_type"),
+            # Newer types still need their settings.
+            ({"type": "form.repost", "name": "x"}, "invalid_form_action"),
+            ({"type": "lead.updatelead", "name": "x"}, "invalid_form_action"),
+            ({"type": "email.send.user", "name": "x"}, "invalid_form_action"),
             ({"name": "x"}, "unsupported_form_action_type"),
             ({"type": "lead.changetags", "name": "", "addTags": ["5"], "removeTags": []}, "invalid_form_action"),
             ({"type": "lead.changetags", "name": "x", "addTags": [], "removeTags": []}, "invalid_form_action"),
@@ -112,7 +114,8 @@ class ActionRuleTests(SimpleTestCase):
     def test_existing_unsafe_and_unmanaged_actions_are_read_only(self):
         for action in ({"id": 9, "type": "lead.remove_do_not_contact", "name": "Undo"},
                        {"id": 10, "type": "lead.changelist", "name": "Join", "properties": {"addToLists": [4]}},
-                       {"id": 11, "type": "form.email", "name": "Notify"},
+                       {"id": 11, "type": "plugin.leadpush", "name": "Push"},
+                       {"id": 12, "type": "form.email", "name": "Copy", "properties": {"subject": "s", "copy_lead": "1"}},
                        {**POINTS_ACTION, "properties": {"operator": "times", "points": 2}}):
             with self.subTest(type=action["type"]):
                 normalized = normalize_action(action, TAGS)
@@ -212,7 +215,8 @@ class ActionApiTests(_ApiBase):
         self.assertEqual(response.status_code, 201, response.json())
         self.assertEqual(response.json()["actionId"], "12")
         self.asserted.create_form_action.assert_called_once_with(
-            "31", {"type": "lead.changetags", "name": "Webinar", "description": "", "properties": {"add_tags": ["6"], "remove_tags": []}}, None)
+            "31", {"type": "lead.changetags", "name": "Webinar", "description": "", "properties": {"add_tags": ["6"], "remove_tags": []}}, None,
+            timeout=None)
         entry = MauticIdentityAuditLog.objects.get()
         self.assertEqual((entry.action, entry.resource, entry.resource_id, entry.mautic_user_id, entry.status),
                          (FORM_ACTION_CREATE, "form_action", "31:12", 6, "succeeded"))
@@ -240,7 +244,7 @@ class ActionApiTests(_ApiBase):
         self.asserted.update_form_action.return_value = after
         response = self.api.patch(reverse("newsletter-admin-form-action-detail", args=["31", "8"]), {"points": 9}, format="json")
         self.assertEqual(response.status_code, 200, response.json())
-        self.asserted.update_form_action.assert_called_once_with("31", "8", {"properties": {"operator": "plus", "points": 9}})
+        self.asserted.update_form_action.assert_called_once_with("31", "8", {"properties": {"operator": "plus", "points": 9}}, timeout=None)
 
     def test_rename_must_not_touch_settings(self):
         after = with_actions([{**TAG_ACTION, "name": "Renamed", "properties": {"add_tags": [], "remove_tags": []}}, POINTS_ACTION])
@@ -275,8 +279,15 @@ class ActionApiTests(_ApiBase):
         self.assertEqual((response.status_code, response.json()["code"]), (502, "form_action_write_uncertain"))
 
     def test_metadata_offers_only_safe_actions(self):
+        self.service.list_users.return_value = {"users": []}
+        self.service.list_emails.return_value = {"emails": [], "total": 0}
+        self.service.list_assets.return_value = {"assets": [], "total": 0}
+        self.service.list_fields.return_value = {"fields": []}
         body = self.api.get(reverse("newsletter-admin-form-action-metadata")).json()
-        self.assertEqual([t["type"] for t in body["actionTypes"]], ["lead.changetags", "lead.pointschange"])
+        types = [t["type"] for t in body["actionTypes"]]
+        self.assertEqual(types[:2], ["lead.changetags", "lead.pointschange"])
+        for refused in ("lead.remove_do_not_contact", "email.send.lead", "lead.changelist"):
+            self.assertNotIn(refused, types)
         self.assertEqual([t["name"] for t in body["tags"]], ["Lead", "Webinar"])
 
     def test_detail_shows_existing_actions_with_their_policy(self):

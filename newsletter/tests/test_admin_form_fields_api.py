@@ -96,8 +96,8 @@ class NewFieldRuleTests(SimpleTestCase):
 
     def test_rejections(self):
         cases = [
-            ({"type": "captcha", "label": "X"}, "unsupported_form_field_type"),
-            ({"type": "file", "label": "X"}, "unsupported_form_field_type"),
+            ({"type": "password", "label": "X"}, "unsupported_form_field_type"),
+            ({"type": "companyLookup", "label": "X"}, "unsupported_form_field_type"),
             ({"type": "text"}, "invalid_form_field"),
             ({"type": "text", "label": "X", "inputAttributes": "onclick=1"}, "unsupported_form_field_settings"),
             ({"type": "button", "label": "Again"}, "form_field_duplicate_button"),
@@ -161,7 +161,7 @@ class FieldUpdateRuleTests(SimpleTestCase):
             plan_field_update({"mappedField": "firstname"}, form["fields"][0], form, CONTACT_FIELDS)
 
     def test_unsupported_existing_field_types_are_left_to_mautic(self):
-        form = form_with(fields=[{"id": 9, "type": "captcha", "alias": "c", "label": "C", "order": 1}])
+        form = form_with(fields=[{"id": 9, "type": "password", "alias": "c", "label": "C", "order": 1}])
         with self.assertRaises(FieldPolicyError) as raised:
             plan_field_update({"label": "X"}, form["fields"][0], form, CONTACT_FIELDS)
         self.assertEqual(raised.exception.code, "form_field_managed_in_mautic")
@@ -193,7 +193,7 @@ class ReadBackTests(SimpleTestCase):
     def test_normalized_fields_carry_options_and_lock_reasons(self):
         field = normalize_field(form_with()["fields"][1])
         self.assertEqual((field["options"], field["placeholder"], field["editable"]), ([{"label": "A", "value": "a"}], "Pick", True))
-        self.assertFalse(normalize_field({"id": 1, "type": "captcha"})["editable"])
+        self.assertFalse(normalize_field({"id": 1, "type": "password"})["editable"])
 
 
 @override_settings(**MAUTIC_SETTINGS)
@@ -270,7 +270,7 @@ class FieldApiTests(TestCase):
     def test_metadata_lists_types_and_safe_contact_fields(self):
         body = self.api.get(reverse("newsletter-admin-form-builder-metadata")).json()
         self.assertEqual([t["type"] for t in body["fieldTypes"]][:3], ["text", "email", "tel"])
-        self.assertNotIn("captcha", [t["type"] for t in body["fieldTypes"]])
+        self.assertNotIn("password", [t["type"] for t in body["fieldTypes"]])
         self.assertNotIn("ecp_newsletter_opt_in", [c["alias"] for c in body["contactFields"]])
         self.assertIn("single Form type", body["formTypeNote"])
 
@@ -305,7 +305,7 @@ class FieldApiTests(TestCase):
 
     def test_invalid_fields_never_reach_mautic(self):
         self.service.get_form.return_value = self.before
-        for data in ({"type": "file", "label": "Upload"}, {"type": "button", "label": "Two"},
+        for data in ({"type": "file", "label": "Upload", "allowedExtensions": ["exe"]}, {"type": "button", "label": "Two"},
                      {"type": "checkboxgrp", "label": "Opt", "mappedField": "ecp_newsletter_opt_in", "options": [{"label": "Y", "value": "1"}]},
                      {"type": "text", "label": "X", "mappedField": "email"}):
             with self.subTest(data=data):
@@ -396,6 +396,5 @@ class FieldApiTests(TestCase):
             self.assertEqual(getattr(other, method)(url, {}, format="json").status_code, 403)
         self.assert_no_writes()
 
-    def test_there_is_no_field_delete(self):
-        self.assertEqual(self.api.delete(self.field_url).status_code, 405)
-        self.assertNotIn("delete_form_field", dir(MauticClient))
+    def test_field_delete_is_offered(self):
+        self.assertIn("delete_form_field", dir(MauticClient))

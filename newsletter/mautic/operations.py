@@ -88,14 +88,17 @@ FORM_PUBLISH = "form.publish"
 FORM_UNPUBLISH = "form.unpublish"
 # Whole-Form delete; Mautic's delete permissions decide, Campaign use refuses it.
 FORM_DELETE = "form.delete"
-# Supported Form fields: add, change and re-order (never delete).
+# Supported Form fields: add, change and re-order; remove one (its stored
+# submission values are lost, so removal is confirmed when submissions exist).
 FORM_FIELD_CREATE = "form.field.create"
 FORM_FIELD_UPDATE = "form.field.update"
 FORM_FIELD_REORDER = "form.field.reorder"
-# Supported submit actions (tags, points): add, change and re-order.
+FORM_FIELD_DELETE = "form.field.delete"
+# Supported submit actions: add, change and re-order; remove any one.
 FORM_ACTION_CREATE = "form.action.create"
 FORM_ACTION_UPDATE = "form.action.update"
 FORM_ACTION_REORDER = "form.action.reorder"
+FORM_ACTION_DELETE = "form.action.delete"
 # Manual Campaign membership (EcpBridgeAudienceApiController).
 CAMPAIGN_CONTACT_ADD = "campaign.contact.add"
 CAMPAIGN_CONTACT_REMOVE = "campaign.contact.remove"
@@ -105,6 +108,11 @@ EMAIL_VARIANT_UPDATE = "email.variant.update"
 EMAIL_TRANSLATION_CREATE = "email.translation.create"
 # Manual contact merge (EcpBridgeContactMergeApiController).
 CONTACT_MERGE = "contact.merge"
+# One published template sent to one contact (EcpBridgeTemplateApiController);
+# the bridge refuses contacts with an email Do Not Contact.
+EMAIL_CONTACT_SEND = "email.contact.send"
+# Company CSV import queued on Mautic's native import (EcpBridgeCompanyImportApiController).
+COMPANY_IMPORT_CREATE = "company.import.create"
 # Landing pages (EcpBridgePageApiController): never scripts or preference centers.
 PAGE_CREATE = "page.create"
 PAGE_UPDATE = "page.update"
@@ -196,8 +204,12 @@ ASSERTABLE_OPERATIONS = frozenset(
         FORM_FIELD_CREATE,
         FORM_FIELD_UPDATE,
         FORM_FIELD_REORDER,
+        FORM_FIELD_DELETE,
         FORM_ACTION_CREATE,
         FORM_ACTION_UPDATE,
+        FORM_ACTION_DELETE,
+        EMAIL_CONTACT_SEND,
+        COMPANY_IMPORT_CREATE,
         FORM_ACTION_REORDER,
         CAMPAIGN_CONTACT_ADD,
         CAMPAIGN_CONTACT_REMOVE,

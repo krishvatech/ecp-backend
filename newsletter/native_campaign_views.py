@@ -1761,6 +1761,73 @@ class NewsletterAdminMauticCampaignChoicesView(APIView):
         )
 
 
+INSIGHTS_TIMEOUT = 20
+CONTACTS_PAGE_SIZE = 25
+CONTACTS_MAX_PAGE_SIZE = 100
+
+
+def _int_param(request, key: str, default: int) -> int:
+    try:
+        return int(request.query_params.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+class NewsletterAdminMauticCampaignContactsView(APIView):
+    """Read-only: the Campaign's current contacts (personal data, never cached)."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, campaign_id):
+        page = max(1, _int_param(request, "page", 1))
+        page_size = max(1, min(_int_param(request, "page_size", CONTACTS_PAGE_SIZE), CONTACTS_MAX_PAGE_SIZE))
+        search = str(request.query_params.get("search") or "").strip()[:100]
+        try:
+            data = MauticClient().get_campaign_contacts(
+                campaign_id, start=(page - 1) * page_size, limit=page_size, search=search, timeout=INSIGHTS_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        total = max(0, int(data.get("total") or 0))
+        response = Response({
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "num_pages": (total + page_size - 1) // page_size,
+            "results": [
+                {
+                    "id": str(row.get("id")),
+                    "email": str(row.get("email") or ""),
+                    "name": " ".join(part for part in (str(row.get("firstname") or "").strip(), str(row.get("lastname") or "").strip()) if part),
+                    "dateAdded": row.get("dateAdded"),
+                    "manuallyAdded": bool(row.get("manuallyAdded")),
+                    "lastActivity": row.get("lastActivity"),
+                }
+                for row in data["contacts"] if isinstance(row, dict) and row.get("id")
+            ],
+        })
+        response["Cache-Control"] = "no-store, private"
+        return response
+
+
+class NewsletterAdminMauticCampaignStatsView(APIView):
+    """Read-only: per-step counts (processed, pending, yes/no, failed)."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, campaign_id):
+        try:
+            data = MauticClient().get_campaign_stats(campaign_id, timeout=INSIGHTS_TIMEOUT)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        keys = ("id", "name", "type", "eventType", "parentId", "decisionPath", "deleted", "processed", "pending", "yes", "no", "failed")
+        events = [{key: event.get(key) for key in keys} for event in data["events"] if isinstance(event, dict)]
+        return Response({
+            "campaignId": str(data.get("campaignId") or campaign_id),
+            "contacts": {"current": int(data["contacts"].get("current") or 0), "removed": int(data["contacts"].get("removed") or 0)},
+            "events": events,
+        })
+
+
 class NewsletterAdminMauticCampaignDetailView(APIView):
     """Staff-only native Mautic Campaign detail, update and delete API."""
 

@@ -1,8 +1,9 @@
 """Bulk actions on ticked Marketing Hub contacts (native Mautic parity).
 
 Matches the Contacts list batch menu of native Mautic 7.1: change segments,
-change campaigns, change owner and Do Not Contact (add only; native has no
-bulk remove either). Up to 100 contacts per request, the bulk-stage limit.
+change campaigns, change owner, change tags (add or remove) and Do Not Contact
+(add only; native has no bulk remove either). Up to 100 contacts per request,
+the bulk-stage limit.
 
 The target is checked once (segment rules, campaign, owner); each contact is
 then changed on its own as the acting admin's Mautic user, with its own
@@ -17,20 +18,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contact_services import _contact_name, _contact_owner, _normalize_bulk_contact_ids, _normalize_owner_id
+from .contact_services import _contact_name, _contact_owner, _normalize_bulk_contact_ids, _normalize_owner_id, _tags_from_contact
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
 from .mautic.operations import (
     CAMPAIGN_CONTACT_ADD,
     CAMPAIGN_CONTACT_REMOVE,
     CONTACT_DNC_ADD,
+    CONTACT_TAG_ADD,
+    CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
     SEGMENT_CONTACT_ADD,
     SEGMENT_CONTACT_REMOVE,
 )
 from .category_segment_services import mapped_category_for_segment, segment_is_static
 
-ACTIONS = ("segment_add", "segment_remove", "campaign_add", "campaign_remove", "owner_set", "dnc_add")
+ACTIONS = ("segment_add", "segment_remove", "campaign_add", "campaign_remove", "owner_set", "tags_add", "tags_remove", "dnc_add")
 REASON_MAX_LENGTH = 255
+MAX_BULK_TAGS = 20
+TAG_MAX_LENGTH = 100
 # Mautic's DoNotContact::MANUAL.
 DNC_MANUAL = 3
 
@@ -68,6 +73,7 @@ def parse_bulk_request(data) -> dict[str, Any]:
         "segment_add": "segment_id", "segment_remove": "segment_id",
         "campaign_add": "campaign_id", "campaign_remove": "campaign_id",
         "owner_set": "owner_id", "dnc_add": "reason",
+        "tags_add": "tags", "tags_remove": "tags",
     }[action]}
     unsupported = sorted(set(data.keys()) - allowed)
     if unsupported:
@@ -87,12 +93,32 @@ def parse_bulk_request(data) -> dict[str, Any]:
             options["owner_id"] = _normalize_owner_id(data.get("owner_id"))
         except ValueError as exc:
             raise BulkActionError(str(exc), code="invalid_target") from exc
+    elif action.startswith("tags_"):
+        options["tags"] = _bulk_tags(data.get("tags"))
     else:
         reason = str(data.get("reason") or "").strip()
         if len(reason) > REASON_MAX_LENGTH:
             raise BulkActionError(f"reason must be {REASON_MAX_LENGTH} characters or fewer.", code="invalid_target")
         options["reason"] = reason
     return options
+
+
+def _bulk_tags(value) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > MAX_BULK_TAGS:
+        raise BulkActionError(f"Choose 1-{MAX_BULK_TAGS} tags.", code="invalid_target")
+    tags: list[str] = []
+    for item in value:
+        tag = str(item if isinstance(item, str) else "").strip()
+        # A leading "-" makes Mautic remove the tag instead of adding it.
+        if not tag or len(tag) > TAG_MAX_LENGTH or tag.startswith("-") or any(ord(ch) < 32 for ch in tag):
+            raise BulkActionError(f"Tags are names of 1-{TAG_MAX_LENGTH} characters and cannot start with \"-\".", code="invalid_target")
+        if tag.lower() not in {t.lower() for t in tags}:
+            tags.append(tag)
+    return tags
+
+
+def _contact_tags(contact: dict[str, Any]) -> list[str]:
+    return [str(item["tag"]) for item in _tags_from_contact(contact)]
 
 
 def _target(options: dict[str, Any], client: MauticClient) -> dict[str, Any]:
@@ -124,6 +150,8 @@ def _target(options: dict[str, Any], client: MauticClient) -> dict[str, Any]:
             raise BulkActionError("That Mautic user is inactive and cannot own contacts.", code="owner_inactive")
         name = " ".join(str(user.get(k) or "").strip() for k in ("firstName", "lastName")).strip()
         return {"type": "owner", "id": str(options["owner_id"]), "name": name or str(user.get("username") or "")}
+    if action.startswith("tags_"):
+        return {"type": "tags", "id": None, "name": ", ".join(options["tags"])}
     return {"type": "dnc", "id": "email", "name": "Email Do Not Contact"}
 
 
@@ -201,6 +229,30 @@ def _apply(action, options, target, contact_id, contact, client, mutate) -> tupl
         mutate(CONTACT_UPDATE, "contact", contact_id, lambda c: c.update_contact(contact_id, {"owner": options["owner_id"]}))
         if (_contact_owner(client.get_contact(contact_id)) or {}).get("id") != wanted:
             raise TemporaryMauticError("Mautic did not confirm the owner change.")
+        return "updated", ""
+
+    if action in ("tags_add", "tags_remove"):
+        current = _contact_tags(contact)
+        held = {tag.lower() for tag in current}
+        if action == "tags_add":
+            missing = [tag for tag in options["tags"] if tag.lower() not in held]
+            if not missing:
+                return "skipped", "Already has these tags."
+            mutate(CONTACT_TAG_ADD, "contact_tag", contact_id,
+                   lambda c: c.add_contact_tag(contact_id, missing[0], current + missing))
+        else:
+            present = [tag for tag in current if tag.lower() in {t.lower() for t in options["tags"]}]
+            if not present:
+                return "skipped", "Has none of these tags."
+            remaining = list(current)
+            for tag in present:
+                remaining = [item for item in remaining if item.lower() != tag.lower()]
+                mutate(CONTACT_TAG_REMOVE, "contact_tag", f"{contact_id}:{tag}",
+                       lambda c, tag=tag, remaining=list(remaining): c.remove_contact_tag(contact_id, tag, remaining))
+        after = {tag.lower() for tag in _contact_tags(client.get_contact(contact_id))}
+        wanted = {tag.lower() for tag in options["tags"]}
+        if (action == "tags_add" and not wanted <= after) or (action == "tags_remove" and wanted & after):
+            raise TemporaryMauticError("Mautic did not confirm the tag change.")
         return "updated", ""
 
     # dnc_add
