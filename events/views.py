@@ -1014,6 +1014,23 @@ def _is_event_manager(user, event) -> bool:
     return False
 
 
+def _last_name_sort_key(display_name, first_name="", last_name=""):
+    """
+    Case- and accent-insensitive (last name, first name, full name) sort key.
+    Uses the stored last name when there is one; otherwise the final word of
+    the display name is treated as the last name (virtual speakers, applicants).
+    """
+    def fold(value):
+        value = unicodedata.normalize("NFKD", value or "")
+        return "".join(ch for ch in value if not unicodedata.combining(ch)).casefold().strip()
+
+    if not (last_name or "").strip():
+        parts = (display_name or "").split()
+        first_name = " ".join(parts[:-1])
+        last_name = parts[-1] if parts else ""
+    return (fold(last_name), fold(first_name), fold(display_name))
+
+
 def _is_event_host(user, event) -> bool:
     """
     Strict role check: is this user a Host for the live room?
@@ -8431,6 +8448,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
         participant_lookup = build_event_participant_lookup(event)
         rows = []
+        # participant_key -> (first_name, last_name) stored on the user account
+        stored_names = {}
 
         # Process registered users as participants
         for registration in qs:
@@ -8485,6 +8504,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 for bl in registration.badge_labels.all()
             ]
 
+            stored_names[f"registration:{registration.id}"] = (
+                registration.user.first_name, registration.user.last_name,
+            )
             rows.append({
                 "participant_key": f"registration:{registration.id}",
                 "source": "registration",
@@ -8559,11 +8581,14 @@ class EventViewSet(viewsets.ModelViewSet):
                 )
             ]
 
-        # Sort by role priority, display_order (if set), then name
+        # Sort by role priority, then last name, then first name
         rows.sort(
             key=lambda row: (
                 role_priority(row.get("badge_key", "attendee")),
-                row.get("display_name", "").lower(),
+                *_last_name_sort_key(
+                    row.get("display_name", ""),
+                    *stored_names.get(row.get("participant_key"), ("", "")),
+                ),
             )
         )
 
