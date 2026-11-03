@@ -958,6 +958,11 @@ class EventLimitOffsetPagination(LimitOffsetPagination):
     max_limit = 1000
 
 
+class FormAssignmentLimitOffsetPagination(LimitOffsetPagination):
+    default_limit = 50
+    max_limit = 100
+
+
 class IsCreatorOrReadOnly(BasePermission):
     """
     - SAFE_METHODS (GET/HEAD/OPTIONS) are open.
@@ -16317,6 +16322,7 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
       Export assignments to CSV
     """
     serializer_class = PostAcceptanceFormAssignmentSerializer
+    pagination_class = FormAssignmentLimitOffsetPagination
     permission_classes = [IsAuthenticated, IsEventAdminOrSuperuser]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['form_type', 'status']
@@ -16335,7 +16341,7 @@ class PostAcceptanceFormAssignmentAdminViewSet(viewsets.ModelViewSet):
         'event_registration__user__email',
         'reminders_sent', 'completed_at'
     ]
-    ordering = ['-created_at']
+    ordering = ['-created_at', '-id']
 
     def get_serializer_class(self):
         """Use admin detail serializer for admin list/detail views."""
