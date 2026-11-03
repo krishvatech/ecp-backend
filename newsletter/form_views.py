@@ -79,7 +79,9 @@ from .mautic.operations import (
     FORM_UNPUBLISH,
     FORM_UPDATE,
 )
+from .mautic_category_services import category_choice
 from .mautic_identity_execution import run_interactive_mutation
+from .mautic_publish_window import PublishWindowError, from_mautic, parse_window
 from .mautic_identity_audit import record_identity_audit
 from .models import MauticIdentityAuditLog, NewsletterCategory
 
@@ -95,7 +97,12 @@ DEFAULT_POST_ACTION = "message"
 # formType is deprecated in Mautic 7.1 (removed in 8.0); ECP never sends it.
 SUPPORTED_FORM_TYPE = "standalone"
 
-EDITABLE_SETTINGS = ("name", "description", "postAction", "postActionProperty")
+EDITABLE_SETTINGS = (
+    "name", "description", "postAction", "postActionProperty",
+    "category", "publishUp", "publishDown", "inKioskMode", "noIndex", "progressiveProfilingLimit",
+)
+# Progressive profiling shows at most this many unanswered fields per visit.
+PROGRESSIVE_LIMIT_MAX = 100
 # Accepted only with their safe values, and never forwarded.
 READ_ONLY_SETTINGS = ("formType", "isPublished")
 
@@ -294,6 +301,13 @@ def normalize_form_detail(form: dict[str, Any], protected: set[str]) -> dict[str
         "publishBlockers": blockers,
         "publishUp": form.get("publishUp"),
         "publishDown": form.get("publishDown"),
+        "inKioskMode": _provider_bool(form.get("inKioskMode", False)),
+        "noIndex": _provider_bool(form.get("noIndex", False)),
+        "progressiveProfilingLimit": (
+            int(form["progressiveProfilingLimit"])
+            if str(form.get("progressiveProfilingLimit") or "").strip().isdigit() and int(form["progressiveProfilingLimit"]) > 0
+            else None
+        ),
         "fieldsEditable": not lock,
         "fieldsLockReason": lock,
         "campaignSource": True,
@@ -306,7 +320,7 @@ def _written_response(stored: dict[str, Any], protected: set[str], *, http_statu
     """Report an ECP write that Mautic confirmed. A published Form whose stored
     submit address is not Mautic's public address is an explicit error: the
     change is saved, but visitors could not complete a submission."""
-    body = {**normalize_form_detail(stored, protected), **extra}
+    body = {**normalize_form_detail(_with_profiling_limit(stored), protected), **extra}
     if body["submitAddress"]["status"] == "mismatch" and _provider_bool(stored.get("isPublished")):
         return _error(
             "The change was saved, but Mautic stored a submit address that is not its public address "
@@ -404,6 +418,47 @@ def _reject_structure(data, protected: set[str]) -> None:
         )
 
 
+def _extra_settings(data: dict[str, Any], current: dict[str, Any] | None) -> dict[str, Any]:
+    """Category, publish window, kiosk mode, no-index and progressive profiling:
+    only the values that change (None clears a category, date or limit)."""
+    current = current or {}
+    changes: dict[str, Any] = {}
+    if "category" in data:
+        try:
+            category = category_choice(data.get("category"), "form")
+        except ValueError as exc:
+            raise FormPolicyError(str(exc), code="invalid_form_settings", field="category") from None
+        stored = current.get("category") if isinstance(current.get("category"), dict) else None
+        if category != (int(stored["id"]) if stored and stored.get("id") else None):
+            changes["category"] = category
+    for flag in ("inKioskMode", "noIndex"):
+        if flag in data and _provider_bool(data.get(flag)) != _provider_bool(current.get(flag, False)):
+            changes[flag] = _provider_bool(data.get(flag))
+    if "progressiveProfilingLimit" in data:
+        raw = data.get("progressiveProfilingLimit")
+        if raw in (None, "", 0, "0"):
+            limit = None
+        else:
+            try:
+                limit = int(str(raw).strip())
+            except ValueError:
+                limit = -1
+            if not 1 <= limit <= PROGRESSIVE_LIMIT_MAX:
+                raise FormPolicyError(f"Progressive profiling shows 1 to {PROGRESSIVE_LIMIT_MAX} fields, or leave it empty for no limit.",
+                                      code="invalid_form_settings", field="progressiveProfilingLimit")
+        stored_limit = current.get("progressiveProfilingLimit")
+        if limit != (int(stored_limit) if str(stored_limit or "").strip().isdigit() and int(stored_limit) > 0 else None):
+            changes["progressiveProfilingLimit"] = limit
+    try:
+        window = parse_window(data, current)
+    except PublishWindowError as exc:
+        raise FormPolicyError(str(exc), code="invalid_form_settings", field=exc.field) from None
+    for key, value in window.items():
+        if from_mautic(value) != from_mautic(current.get(key)):
+            changes[key] = value
+    return changes
+
+
 def parse_form_settings(data, *, current: dict[str, Any] | None = None, protected: set[str] | None = None) -> dict[str, Any]:
     """Validate a create (``current`` is None) or a basic edit, and return only
     the native settings to send. Never returns fields, actions, formType or
@@ -467,6 +522,8 @@ def parse_form_settings(data, *, current: dict[str, Any] | None = None, protecte
         payload["postAction"] = action
         payload["postActionProperty"] = prop
 
+    payload.update(_extra_settings(data, current))
+
     if not creating:
         # Send only what changes; the post-action pair above already travels
         # together and only when one of them changes.
@@ -526,9 +583,20 @@ def _invalid_id_response() -> Response:
     return _error("Form links use a numeric Mautic Form ID.", code="invalid_form_id", http_status=status.HTTP_400_BAD_REQUEST)
 
 
+def _with_profiling_limit(form: dict[str, Any]) -> dict[str, Any]:
+    """Mautic's API leaves progressiveProfilingLimit out of a Form; the bridge
+    reads it. Without it, a cleared limit would look unchanged and be skipped."""
+    if not isinstance(form, dict) or not form.get("id"):
+        return form
+    try:
+        return {**form, "progressiveProfilingLimit": MauticClient().get_form_profiling_limit(form["id"])}
+    except (TemporaryMauticError, PermanentMauticError):
+        return form
+
+
 def _read_form(form_id: str):
     try:
-        return MauticClient().get_form(form_id), None
+        return _with_profiling_limit(MauticClient().get_form(form_id)), None
     except (TemporaryMauticError, PermanentMauticError) as exc:
         return None, _provider_error_response(exc)
 

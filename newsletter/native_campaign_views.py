@@ -38,7 +38,9 @@ from .mautic_identity_audit import (
     record_identity_audit,
     record_identity_failure,
 )
+from .mautic_category_services import category_choice
 from .mautic_identity_errors import identity_error_response
+from .mautic_publish_window import PublishWindowError, parse_window
 from .models import MauticIdentityAuditLog
 from .mautic_reference_choices import (
     REFERENCE_CHOICE_SOURCES,
@@ -105,6 +107,35 @@ def _normalize_relation_id(value):
     return str(value)
 
 
+def _campaign_category(campaign: dict[str, Any]) -> dict[str, Any] | None:
+    category = campaign.get("category")
+    if not isinstance(category, dict) or not category.get("id"):
+        return None
+    return {"id": int(category["id"]), "title": str(category.get("title") or ""), "color": str(category.get("color") or "")}
+
+
+CAMPAIGN_SETTINGS = ("category", "allowRestart", "publishUp", "publishDown")
+
+
+def parse_campaign_settings(data, current: dict[str, Any], *, client=None) -> dict[str, Any]:
+    """The settings that change: a campaign-type category (or none), whether
+    contacts can restart it, and its publish window. Raises ValueError."""
+    if not hasattr(data, "keys"):
+        raise ValueError("Send the settings as an object.")
+    unknown = sorted(set(data.keys()) - set(CAMPAIGN_SETTINGS))
+    if unknown:
+        raise ValueError("Unsupported campaign setting(s): " + ", ".join(unknown))
+    payload: dict[str, Any] = {}
+    if "category" in data:
+        payload["category"] = category_choice(data.get("category"), "campaign", client=client)
+    if "allowRestart" in data:
+        payload["allowRestart"] = _parse_bool(data.get("allowRestart"), field_name="Contacts can restart")
+    payload.update(parse_window(data, current))
+    if not payload:
+        raise ValueError("Nothing to change.")
+    return payload
+
+
 def _normalize_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
     campaign_id = campaign.get("id")
     lists = _collection_items(campaign.get("lists"))
@@ -159,6 +190,10 @@ def _normalize_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
         "name": str(campaign.get("name") or "").strip(),
         "description": str(campaign.get("description") or ""),
         "isPublished": _provider_bool(campaign.get("isPublished", False)),
+        "category": _campaign_category(campaign),
+        "allowRestart": _provider_bool(campaign.get("allowRestart", False)),
+        "publishUp": campaign.get("publishUp"),
+        "publishDown": campaign.get("publishDown"),
         "dateAdded": campaign.get("dateAdded"),
         "dateModified": campaign.get("dateModified"),
         "contactCount": campaign.get("contactCount"),
@@ -1826,6 +1861,51 @@ class NewsletterAdminMauticCampaignStatsView(APIView):
             "contacts": {"current": int(data["contacts"].get("current") or 0), "removed": int(data["contacts"].get("removed") or 0)},
             "events": events,
         })
+
+
+class NewsletterAdminMauticCampaignSettingsView(APIView):
+    """PATCH a campaign's category, restart rule and publish window. Saved on
+    their own, so the builder's workflow save is never involved."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def patch(self, request, campaign_id):
+        correlation_id = correlation_id_for_request(request)
+        action = MauticIdentityAuditLog.Action.CAMPAIGN_UPDATE
+        try:
+            current = MauticClient().get_campaign(campaign_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        try:
+            payload = parse_campaign_settings(request.data, current)
+        except PublishWindowError as exc:
+            return Response({"detail": str(exc), "errors": {exc.field: str(exc)}}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            client = _interactive_campaign_client(request, correlation_id)
+            campaign = client.update_campaign_settings(campaign_id, payload)
+        except (MauticBridgeRejectedError, MauticIdentityError) as exc:
+            record_identity_failure(
+                action=action, exc=exc, actor=request.user, resource="campaign", resource_id=campaign_id,
+                correlation_id=correlation_id,
+            )
+            return _with_correlation(identity_error_response(exc), correlation_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _provider_error_response(exc)
+        record_identity_audit(
+            action=action,
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            mautic_user_id=_asserted_user_id(client),
+            resource="campaign",
+            resource_id=campaign_id,
+            auth_mode=_auth_mode_label(client),
+            correlation_id=correlation_id,
+            assertion_jti=_assertion_jti(client),
+            detail=("settings: " + ", ".join(sorted(payload)))[:250],
+        )
+        return _with_correlation(Response(_normalize_campaign(campaign)), correlation_id)
 
 
 class NewsletterAdminMauticCampaignDetailView(APIView):

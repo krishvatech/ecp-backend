@@ -37,8 +37,8 @@ class DeliveryOptionRuleTests(SimpleTestCase):
 
     def test_mautic_shapes_are_normalized(self):
         self.assertEqual(normalize_delivery_options({"utmTags": [], "assetAttachments": {"0": {"id": 5, "title": "Brochure"}}}),
-                         {"replyToAddress": "", "utmTags": {"utmSource": "", "utmMedium": "", "utmCampaign": "", "utmContent": ""},
-                          "assetAttachments": [{"id": "5", "title": "Brochure"}]})
+                         {"replyToAddress": "", "bccAddress": "", "utmTags": {"utmSource": "", "utmMedium": "", "utmCampaign": "", "utmContent": ""},
+                          "assetAttachments": [{"id": "5", "title": "Brochure"}], "excludedLists": []})
 
     def test_form_encoding_nests_utm_tags_and_clearing_attachments_uses_json(self):
         encoded = MauticClient._email_form_data({"utmTags": {"utmSource": "imaa", "utmMedium": ""}, "lists": [1, 2]})

@@ -73,6 +73,8 @@ POINT_TRIGGER_EVENT_CREATE = "point.trigger.event.create"
 POINT_TRIGGER_EVENT_UPDATE = "point.trigger.event.update"
 POINT_TRIGGER_EVENT_DELETE = "point.trigger.event.delete"
 CONTACT_NOTE_CREATE = "contact.note.create"
+CONTACT_NOTE_UPDATE = "contact.note.update"
+CONTACT_NOTE_DELETE = "contact.note.delete"
 CONTACT_DNC_ADD = "contact.dnc.add"
 CONTACT_DNC_REMOVE = "contact.dnc.remove"
 STAGE_CREATE = "stage.create"
@@ -131,6 +133,11 @@ REPORT_DELETE = "report.delete"
 ASSET_CREATE = "asset.create"
 ASSET_UPDATE = "asset.update"
 ASSET_DELETE = "asset.delete"
+# Categories (EcpBridgeCategoryApiController): the Subscription List marker
+# category can be neither changed nor deleted.
+CATEGORY_CREATE = "category.create"
+CATEGORY_UPDATE = "category.update"
+CATEGORY_DELETE = "category.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -189,6 +196,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         POINT_TRIGGER_EVENT_UPDATE,
         POINT_TRIGGER_EVENT_DELETE,
         CONTACT_NOTE_CREATE,
+        CONTACT_NOTE_UPDATE,
+        CONTACT_NOTE_DELETE,
         CONTACT_DNC_ADD,
         CONTACT_DNC_REMOVE,
         STAGE_CREATE,
@@ -231,5 +240,8 @@ ASSERTABLE_OPERATIONS = frozenset(
         ASSET_CREATE,
         ASSET_UPDATE,
         ASSET_DELETE,
+        CATEGORY_CREATE,
+        CATEGORY_UPDATE,
+        CATEGORY_DELETE,
     }
 )

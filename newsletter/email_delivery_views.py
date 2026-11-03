@@ -25,6 +25,7 @@ from .email_delivery_options import (
     normalize_delivery_options,
     options_match,
     parse_delivery_options,
+    with_excluded_segments,
 )
 from .marketing_permissions import HasMarketingHubAccess
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
@@ -40,7 +41,7 @@ MAX_LINK_PAGES = 10
 def _rows(value) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         value = list(value.values())
-    return [row for row in value or [] if isinstance(row, dict)]
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
 def family_email_ids(email: dict[str, Any]) -> list[str]:
@@ -150,7 +151,8 @@ def _delivery_body(campaign, email: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class NewsletterAdminCampaignDeliveryOptionsView(APIView):
-    """GET or PATCH a broadcast's Reply-To, UTM tags and attachments.
+    """GET or PATCH a broadcast's Reply-To, BCC, UTM tags, attachments and
+    excluded segments.
 
     They live on the broadcast's Mautic email only, so they are available once
     the broadcast has been saved to Mautic, and change only while it is a draft.
@@ -165,7 +167,8 @@ class NewsletterAdminCampaignDeliveryOptionsView(APIView):
         if not email_id:
             return Response(_delivery_body(campaign, None))
         try:
-            return Response(_delivery_body(campaign, MauticClient().get_email(email_id)))
+            client = MauticClient()
+            return Response(_delivery_body(campaign, with_excluded_segments(client, client.get_email(email_id))))
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
 
@@ -181,19 +184,21 @@ class NewsletterAdminCampaignDeliveryOptionsView(APIView):
         data = request.data if hasattr(request.data, "get") else {}
         unknown = sorted(set(data.keys()) - set(DELIVERY_FIELDS))
         if unknown or not data:
-            return Response({"detail": "Send replyToAddress, utmTags and/or assetAttachments.", "code": "invalid_delivery_options"},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Send replyToAddress, bccAddress, utmTags, assetAttachments and/or excludedLists.",
+                             "code": "invalid_delivery_options"}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            native = parse_delivery_options(data, known_assets=_known_assets())
+            email = MauticClient().get_email(email_id)
+            native = parse_delivery_options(
+                data,
+                known_assets=_known_assets() if "assetAttachments" in data else None,
+                exclusions={"published": _segment_publish_states() if "excludedLists" in data else None,
+                            "targets": [str(row.get("id")) for row in _rows(email.get("lists")) if row.get("id") is not None]},
+            )
         except DeliveryOptionsError as exc:
             return Response({"detail": str(exc), "code": exc.code, "errors": {exc.field: str(exc)}}, status=status.HTTP_400_BAD_REQUEST)
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
-
-        try:
-            family = family_email_ids(MauticClient().get_email(email_id))
-        except (TemporaryMauticError, PermanentMauticError) as exc:
-            return _provider_error(exc)
+        family = family_email_ids(email)
         for version_id in family:
             try:
                 _, error_response = run_interactive_mutation(
@@ -211,7 +216,8 @@ class NewsletterAdminCampaignDeliveryOptionsView(APIView):
             if error_response is not None:
                 return error_response
         try:
-            stored = MauticClient().get_email(email_id)
+            client = MauticClient()
+            stored = with_excluded_segments(client, client.get_email(email_id))
         except (TemporaryMauticError, PermanentMauticError) as exc:
             return _provider_error(exc)
         problems = options_match(stored, native)
@@ -220,6 +226,17 @@ class NewsletterAdminCampaignDeliveryOptionsView(APIView):
                              "code": "delivery_options_mismatch", **_delivery_body(campaign, stored)},
                             status=status.HTTP_409_CONFLICT)
         return Response(_delivery_body(campaign, stored))
+
+
+def _segment_publish_states() -> dict[str, bool] | None:
+    """Every Mautic segment ID with whether it is published, or None when the
+    list cannot be read whole."""
+    data = MauticClient().list_segments(limit=500)
+    rows = data.get("lists")
+    rows = list(rows.values()) if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+    if int(data.get("total") or 0) > len(rows):
+        return None
+    return {str(row.get("id")): row.get("isPublished") in (True, 1, "1") for row in rows if isinstance(row, dict)}
 
 
 def _known_assets() -> set[str] | None:

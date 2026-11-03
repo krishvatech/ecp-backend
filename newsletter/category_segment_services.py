@@ -127,7 +127,9 @@ def segment_payload_for_category(category, *, include_alias=False, consent_categ
         "description": category.description,
         "isPublished": bool(category.is_active),
         "isPreferenceCenter": False,
-        "filters": [],
+        # No "filters": these segments are static. An empty list would make
+        # the client send JSON (its way to clear filters) instead of the form
+        # encoding this path has always used.
     }
     if include_alias:
         payload["alias"] = category.slug

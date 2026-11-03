@@ -587,6 +587,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_a_successful_delete_is_reported_as_success(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.return_value = self._deleted_entity()
 
         response = self.client.delete(self.detail_url)
@@ -596,6 +597,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_the_provider_is_asked_to_delete_exactly_once(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.return_value = self._deleted_entity()
 
         self.client.delete(self.detail_url)
@@ -606,6 +608,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_deleting_an_unknown_segment_is_not_found(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         """A repeated delete: Mautic answers 404 Item was not found."""
         client_cls.return_value.delete_segment.side_effect = PermanentMauticError(
             "Mautic API request failed (HTTP 404): Item was not found."
@@ -617,6 +620,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_a_provider_permission_error_is_not_reported_as_success(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.side_effect = PermanentMauticError(
             "Mautic API request failed (HTTP 403): Access denied."
         )
@@ -628,6 +632,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_a_provider_conflict_is_reported_as_bad_request(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.side_effect = PermanentMauticError(
             "Mautic API request failed (HTTP 409): dependent records"
         )
@@ -638,6 +643,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_a_provider_failure_is_not_reported_as_success(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.side_effect = TemporaryMauticError(
             "Mautic API request failed (HTTP 503)"
         )
@@ -648,6 +654,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_a_malformed_provider_response_still_fails(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         client_cls.return_value.delete_segment.side_effect = TemporaryMauticError(
             "Mautic segment deletion returned an invalid response"
         )
@@ -665,6 +672,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_delete_rejects_non_staff(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         self.client.force_authenticate(user=self.normal_user)
 
         response = self.client.delete(self.detail_url)
@@ -676,6 +684,7 @@ class NewsletterAdminMauticSegmentDeleteTests(TestCase):
     def test_a_subscription_list_segment_is_blocked_before_the_provider_is_called(
         self, client_cls
     ):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         NewsletterCategory.objects.create(
             name="QA Delete Protection List",
             slug="qa-delete-protection-list",

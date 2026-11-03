@@ -1,5 +1,8 @@
-"""Email delivery options Mautic keeps on the email itself: Reply-To, the UTM
-tags it adds to tracked links, and file attachments (assets).
+"""Email delivery options Mautic keeps on the email itself: Reply-To, BCC, the
+UTM tags it adds to tracked links, file attachments (assets) and, for segment
+emails (broadcasts) only, excluded segments: members of those are never sent
+it. Mautic applies exclusions only when it picks a segment email's recipients,
+so templates (sent by campaigns) do not take them.
 
 Templates save them with the template. A broadcast's are set on its Mautic email
 (and its A/B and translation versions) once the broadcast has one: ECP stores
@@ -20,13 +23,15 @@ from typing import Any
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 
-FIELDS = ("replyToAddress", "utmTags", "assetAttachments")
+FIELDS = ("replyToAddress", "utmTags", "assetAttachments", "bccAddress", "excludedLists")
 UTM_KEYS = ("utmSource", "utmMedium", "utmCampaign", "utmContent")
 UTM_LABELS = {"utmSource": "UTM source", "utmMedium": "UTM medium", "utmCampaign": "UTM campaign", "utmContent": "UTM content"}
 UTM_MAX_LENGTH = 100
 # Characters that would break or inject into the tracked link's query string are refused.
 UTM_VALUE_RE = re.compile(r"^[A-Za-z0-9 ._~+\-|:/{}]*$")
 MAX_ATTACHMENTS = 10
+MAX_EXCLUDED_SEGMENTS = 20
+ADDRESS_MAX_LENGTH = 191
 
 
 class DeliveryOptionsError(ValueError):
@@ -50,27 +55,76 @@ def normalize_delivery_options(email: dict[str, Any]) -> dict[str, Any]:
         if str(asset_id or "").isdigit():
             title = str(row.get("title") or "") if isinstance(row, dict) else ""
             attachments.append({"id": str(asset_id), "title": title or f"Asset {asset_id}"})
+    excluded = []
+    for row in _collection(email.get("excludedLists")):
+        segment_id = row.get("id") if isinstance(row, dict) else row
+        if str(segment_id or "").isdigit():
+            name = str(row.get("name") or "") if isinstance(row, dict) else ""
+            excluded.append({"id": str(segment_id), "name": name or f"Segment {segment_id}"})
     return {
         "replyToAddress": str(email.get("replyToAddress") or ""),
+        "bccAddress": str(email.get("bccAddress") or ""),
         "utmTags": {key: str(utm.get(key) or "") for key in UTM_KEYS},
         "assetAttachments": attachments,
+        "excludedLists": excluded,
     }
 
 
-def parse_delivery_options(data, *, known_assets: set[str] | None = None) -> dict[str, Any]:
-    """The native settings for the delivery options present in ``data``."""
+def with_excluded_segments(client, email: dict[str, Any]) -> dict[str, Any]:
+    """The email with the segments it excludes, which Mautic's email API never
+    returns. Raises the client's errors when they cannot be read."""
+    if not isinstance(email, dict) or not email.get("id"):
+        return email
+    return {**email, "excludedLists": client.get_email_excluded_segments(email["id"])}
+
+
+def _address(data, key: str, label: str) -> str:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise DeliveryOptionsError(f"{label} must be an email address.", field=key)
+    value = (value or "").strip()
+    if value:
+        if len(value) > ADDRESS_MAX_LENGTH:
+            raise DeliveryOptionsError(f"{label} must be {ADDRESS_MAX_LENGTH} characters or fewer.", field=key)
+        try:
+            validate_email(value)
+        except DjangoValidationError:
+            raise DeliveryOptionsError(f"{label} must be one valid email address.", field=key) from None
+    return value
+
+
+def parse_delivery_options(data, *, known_assets: set[str] | None = None, exclusions: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The native settings for the delivery options present in ``data``.
+
+    ``exclusions`` allows excluded segments (broadcasts only): its
+    ``published`` maps each segment ID to whether it is published (None when
+    unknown; Mautic accepts published segments only) and ``targets`` holds the
+    segments the email is sent to, which it cannot also exclude."""
     native: dict[str, Any] = {}
     if "replyToAddress" in data:
-        value = data.get("replyToAddress")
-        if value is not None and not isinstance(value, str):
-            raise DeliveryOptionsError("Reply-To must be an email address.", field="replyToAddress")
-        value = (value or "").strip()
-        if value:
-            try:
-                validate_email(value)
-            except DjangoValidationError:
-                raise DeliveryOptionsError("Reply-To must be one valid email address.", field="replyToAddress") from None
-        native["replyToAddress"] = value
+        native["replyToAddress"] = _address(data, "replyToAddress", "Reply-To")
+    if "bccAddress" in data:
+        native["bccAddress"] = _address(data, "bccAddress", "BCC")
+    if "excludedLists" in data:
+        if exclusions is None:
+            raise DeliveryOptionsError("Excluded segments apply to broadcasts only.", field="excludedLists")
+        value = data.get("excludedLists")
+        if not isinstance(value, list) or len(value) > MAX_EXCLUDED_SEGMENTS:
+            raise DeliveryOptionsError(f"Exclude up to {MAX_EXCLUDED_SEGMENTS} segments.", field="excludedLists")
+        published, targets = exclusions.get("published"), set(exclusions.get("targets") or ())
+        ids: list[str] = []
+        for item in value:
+            segment_id = str(item.get("id") if isinstance(item, dict) else item).strip()
+            if isinstance(item, bool) or not segment_id.isdigit() or segment_id == "0":
+                raise DeliveryOptionsError("Excluded segments are chosen from Mautic's segments.", field="excludedLists")
+            if segment_id in targets:
+                raise DeliveryOptionsError("A broadcast can't exclude a segment it is sent to.", field="excludedLists")
+            if published is not None and published.get(segment_id) is not True:
+                raise DeliveryOptionsError(f"Segment {segment_id} is unpublished or no longer exists; Mautic only excludes published segments.",
+                                           field="excludedLists")
+            if segment_id not in ids:
+                ids.append(segment_id)
+        native["excludedLists"] = ids
     if "utmTags" in data:
         tags = data.get("utmTags")
         if not isinstance(tags, dict) or set(tags) - set(UTM_KEYS):
@@ -111,6 +165,10 @@ def options_match(email: dict[str, Any], native: dict[str, Any]) -> list[str]:
     problems = []
     if "replyToAddress" in native and stored["replyToAddress"] != native["replyToAddress"]:
         problems.append("Reply-To")
+    if "bccAddress" in native and stored["bccAddress"] != native["bccAddress"]:
+        problems.append("BCC")
+    if "excludedLists" in native and sorted(s["id"] for s in stored["excludedLists"]) != sorted(native["excludedLists"]):
+        problems.append("excluded segments")
     if "utmTags" in native and stored["utmTags"] != {key: native["utmTags"].get(key, "") for key in UTM_KEYS}:
         problems.append("UTM tags")
     if "assetAttachments" in native and sorted(a["id"] for a in stored["assetAttachments"]) != sorted(native["assetAttachments"]):

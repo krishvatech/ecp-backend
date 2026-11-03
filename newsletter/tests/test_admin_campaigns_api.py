@@ -524,7 +524,6 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "description": "Board news.",
                 "isPublished": True,
                 "isPreferenceCenter": False,
-                "filters": [],
                 "alias": "board-updates",
             }
         )
@@ -713,7 +712,6 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "description": "Updated.",
                 "isPublished": True,
                 "isPreferenceCenter": False,
-                "filters": [],
             },
         )
 
@@ -741,7 +739,6 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "description": "",
                 "isPublished": True,
                 "isPreferenceCenter": False,
-                "filters": [],
             },
         )
 
@@ -1189,6 +1186,7 @@ class NewsletterAdminCampaignAPITests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_delete_native_mautic_segment_success_deletes_no_category(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         before_slugs = set(NewsletterCategory.objects.values_list("slug", flat=True))
         self._authenticate(self.staff)
 
@@ -1205,6 +1203,7 @@ class NewsletterAdminCampaignAPITests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_delete_native_mautic_segment_blocks_mapped_subscription_list_segment(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         self.category.mautic_segment_id = "3"
         self.category.save(update_fields=["mautic_segment_id"])
         self._authenticate(self.staff)
@@ -1221,6 +1220,7 @@ class NewsletterAdminCampaignAPITests(TestCase):
 
     @patch("newsletter.admin_views.MauticClient")
     def test_delete_native_mautic_segment_provider_error_returns_400(self, client_cls):
+        client_cls.return_value.get_segment_usage.return_value = {"total": 0, "usage": {}}
         from newsletter.mautic import PermanentMauticError
 
         client_cls.return_value.delete_segment.side_effect = PermanentMauticError(

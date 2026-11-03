@@ -1,5 +1,6 @@
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.conf import settings
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
@@ -34,6 +35,7 @@ from .contact_services import (
     clear_admin_contact_stage,
     add_admin_contact_dnc,
     create_admin_contact,
+    contact_note as _contact_note,
     create_admin_contact_note,
     get_admin_contact,
     get_admin_contact_engagement,
@@ -48,7 +50,10 @@ from .contact_services import (
     remove_admin_contact_dnc,
     set_admin_contact_tag,
     update_admin_contact,
+    update_admin_contact_note,
 )
+from .contact_data_export import build_contact_data_export
+from .mautic_identity_audit import record_identity_audit
 from .campaign_services import (
     cancel_native_schedule,
     is_mautic_scheduled,
@@ -75,6 +80,7 @@ from .campaign_services import (
 from .native_broadcast_reconciliation import guard_native_schedule_change
 from .models import (
     MauticContactMapping,
+    MauticIdentityAuditLog,
     NewsletterAudience,
     NewsletterCampaign,
     NewsletterCategory,
@@ -86,6 +92,8 @@ from .mautic.operations import (
     CONTACT_DNC_ADD,
     CONTACT_DNC_REMOVE,
     CONTACT_NOTE_CREATE,
+    CONTACT_NOTE_DELETE,
+    CONTACT_NOTE_UPDATE,
     CONTACT_TAG_ADD,
     CONTACT_TAG_REMOVE,
     CONTACT_UPDATE,
@@ -115,6 +123,7 @@ from .mautic_reference_choices import (
 )
 from .sync_events import create_newsletter_sync_event
 from .category_segment_services import (
+    CONSENT_CATEGORY_ALIAS,
     compensate_created_segment as _compensate_created_segment,
     ensure_category_segment as _ensure_category_segment,
     find_segment_by_exact_alias as _find_segment_by_exact_alias,
@@ -127,6 +136,7 @@ from .category_segment_services import (
     segments_from_response as _segments_from_response,
 )
 from .category_delete_services import live_categories as _live_categories
+from .mautic_category_services import category_choice as _category_choice
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +210,38 @@ def _ensure_native_segment_is_not_managed(segment_id):
                 "detail": (
                     "This Mautic segment is managed by the ECP Subscription "
                     f"List '{mapped.name}'. Edit it from Subscription Lists."
+                )
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None
+
+
+def _segment_category(segment):
+    category = segment.get("category") if isinstance(segment, dict) else None
+    if not isinstance(category, dict) or not category.get("id"):
+        return None
+    return {
+        "id": int(category["id"]),
+        "title": str(category.get("title") or ""),
+        "alias": str(category.get("alias") or ""),
+        "color": str(category.get("color") or "").lstrip("#"),
+    }
+
+
+def _segment_is_consent_marked(segment):
+    """In the Subscription List marker category, so a consent gate."""
+    category = _segment_category(segment)
+    return bool(category and category["alias"] == CONSENT_CATEGORY_ALIAS)
+
+
+def _ensure_segment_not_consent_marked(segment):
+    if _segment_is_consent_marked(segment):
+        return Response(
+            {
+                "detail": (
+                    "This segment is in the Subscription List category, so it gates "
+                    "consent-based email. It is managed by ECP and cannot be changed here."
                 )
             },
             status=status.HTTP_409_CONFLICT,
@@ -291,15 +333,25 @@ def _normalize_mautic_segment(segment, mapped_categories=None):
         "subscription_list_slug": mapped_category.slug if mapped_category else None,
         "subscription_list_name": mapped_category.name if mapped_category else None,
         "mapped_in_ecp": managed,
+        "publicName": segment.get("publicName") or "",
+        "isGlobal": _normalize_provider_bool(segment.get("isGlobal", False)),
+        "isPreferenceCenter": _normalize_provider_bool(segment.get("isPreferenceCenter", False)),
+        "category": _segment_category(segment),
+        "consent_marked": _segment_is_consent_marked(segment),
     }
+    # Neither a Subscription List segment nor a consent gate is edited here.
+    normalized["protected"] = managed or normalized["consent_marked"]
     return normalized
 
 
 _SEGMENT_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def _parse_native_segment_payload(data, *, partial=False, filter_metadata=None):
-    allowed_fields = {"name", "alias", "description", "isPublished", "filters"}
+def _parse_native_segment_payload(data, *, partial=False, filter_metadata=None, category_checker=None):
+    allowed_fields = {
+        "name", "alias", "description", "isPublished", "filters",
+        "publicName", "isGlobal", "isPreferenceCenter", "category",
+    }
     unsupported = sorted(set(data.keys()) - allowed_fields)
     if unsupported:
         raise ValueError(
@@ -330,6 +382,22 @@ def _parse_native_segment_payload(data, *, partial=False, filter_metadata=None):
 
     if "description" in data:
         payload["description"] = str(data.get("description") or "")
+
+    if "publicName" in data:
+        public_name = str(data.get("publicName") or "").strip()
+        if len(public_name) > 190:
+            raise ValueError("The public name cannot exceed 190 characters.")
+        # Mautic shows the name where the public name is blank.
+        payload["publicName"] = public_name
+
+    for flag, label in (("isGlobal", "Global"), ("isPreferenceCenter", "Show in preference center")):
+        if flag in data:
+            payload[flag] = _parse_provider_bool(data.get(flag), field_name=label)
+
+    if "category" in data:
+        if category_checker is None:
+            raise ValueError("Segment categories cannot be checked right now.")
+        payload["category"] = category_checker(data.get("category"))
 
     if "isPublished" in data:
         payload["isPublished"] = _parse_provider_bool(
@@ -1351,6 +1419,104 @@ class NewsletterAdminContactNotesView(APIView):
         return Response(data, status=status.HTTP_201_CREATED)
 
 
+class NewsletterAdminContactNoteDetailView(APIView):
+    """PATCH a note's text or type, or DELETE it, as the admin's Mautic user.
+    The note must belong to the contact in the URL."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def _note(self, mautic_contact_id, note_id):
+        try:
+            return _contact_note(mautic_contact_id, note_id), None
+        except LookupError:
+            raise Http404
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc) or "numeric" in str(exc):
+                raise Http404
+            return None, _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return None, _provider_error_response(exc)
+
+    def patch(self, request, mautic_contact_id, note_id):
+        _, error = self._note(mautic_contact_id, note_id)
+        if error is not None:
+            return error
+        try:
+            data, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_NOTE_UPDATE,
+                resource="contact_note",
+                resource_id=str(note_id),
+                mutate=lambda client: update_admin_contact_note(note_id, request.data, client=client),
+                client_factory=MauticClient,
+                detail=f"contact {mautic_contact_id}",
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermanentMauticError as exc:
+            return _contact_stage_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
+        return Response(data)
+
+    def delete(self, request, mautic_contact_id, note_id):
+        _, error = self._note(mautic_contact_id, note_id)
+        if error is not None:
+            return error
+        try:
+            _, identity_response = run_interactive_mutation(
+                request,
+                action=CONTACT_NOTE_DELETE,
+                resource="contact_note",
+                resource_id=str(note_id),
+                mutate=lambda client: client.delete_note(note_id),
+                client_factory=MauticClient,
+                detail=f"contact {mautic_contact_id}",
+            )
+        except PermanentMauticError as exc:
+            return _contact_stage_provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminContactDataExportView(APIView):
+    """GET a ZIP of everything Mautic holds about one contact (profile, tags,
+    segments, campaigns, companies, DNC, notes, activity), for data-access
+    requests. Audited; never cached."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, mautic_contact_id):
+        if not str(mautic_contact_id).isdigit():
+            raise Http404
+        try:
+            filename, content, summary = build_contact_data_export(mautic_contact_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+        record_identity_audit(
+            action="contact.data.export",
+            status=MauticIdentityAuditLog.Status.SUCCEEDED,
+            actor=request.user,
+            resource="contact",
+            resource_id=str(mautic_contact_id),
+            detail=f"{summary['fields']} fields, {summary['notes']} notes, {summary['events']} events"
+                   + (", truncated" if summary["truncated"] else ""),
+        )
+        response = HttpResponse(content, content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["Cache-Control"] = "no-store, private"
+        return response
+
+
 class NewsletterAdminContactDncView(APIView):
     permission_classes = [HasMarketingHubAccess]
 
@@ -2231,6 +2397,7 @@ class NewsletterAdminMauticSegmentListView(APIView):
             payload = _parse_native_segment_payload(
                 request.data,
                 filter_metadata=metadata,
+                category_checker=lambda value: _category_choice(value, "segment", client=client),
             )
         except ValueError as exc:
             return Response(
@@ -2371,6 +2538,9 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
 
         try:
             client = MauticClient()
+            protected_response = _ensure_segment_not_consent_marked(client.get_segment(segment_id))
+            if protected_response is not None:
+                return protected_response
             metadata = (
                 client.get_segment_filter_metadata()
                 if _request_carries_segment_filters(request.data)
@@ -2384,6 +2554,7 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
                 request.data,
                 partial=True,
                 filter_metadata=metadata,
+                category_checker=lambda value: _category_choice(value, "segment", client=client),
             )
         except ValueError as exc:
             return Response(
@@ -2424,6 +2595,33 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             )
 
         try:
+            client = MauticClient()
+            protected_response = _ensure_segment_not_consent_marked(client.get_segment(segment_id))
+            if protected_response is not None:
+                return protected_response
+            usage = client.get_segment_usage(segment_id)
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+        # Mautic's API delete skips its own dependency checks; a campaign or
+        # email using the segment would silently lose it. Unless Mautic gives
+        # a clear count, the segment is kept.
+        total = usage.get("total") if isinstance(usage, dict) else None
+        if not isinstance(total, int) or isinstance(total, bool):
+            return Response(
+                {"detail": "Mautic could not say where this segment is used, so it was not deleted. Try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        if total:
+            return Response(
+                {
+                    "detail": "This segment is in use. Remove it from the items below before deleting it.",
+                    "code": "segment_in_use",
+                    "usage": usage.get("usage") if isinstance(usage.get("usage"), dict) else {},
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
             _, identity_response = run_interactive_mutation(
                 request,
                 action=SEGMENT_DELETE,
@@ -2438,6 +2636,107 @@ class NewsletterAdminMauticSegmentDetailView(APIView):
             return identity_response
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NewsletterAdminMauticSegmentUsageView(APIView):
+    """Where a segment is used: campaigns (source, conditions, segment actions),
+    emails sent to or excluding it, forms, other segments, reports, point triggers."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    def get(self, request, segment_id):
+        try:
+            data = MauticClient().get_segment_usage(segment_id)
+        except PermanentMauticError as exc:
+            if "HTTP 404" in str(exc) or "numeric" in str(exc):
+                raise Http404
+            return _provider_error_response(exc)
+        except TemporaryMauticError as exc:
+            return _provider_error_response(exc)
+        broadcasts = {
+            str(row["mautic_email_id"]): str(row["uuid"])
+            for row in NewsletterCampaign.objects.exclude(mautic_email_id="").values("mautic_email_id", "uuid")
+        }
+        for email in (data.get("usage") or {}).get("emails") or []:
+            email["broadcast_uuid"] = broadcasts.get(str(email.get("id")))
+        return Response({"total": int(data.get("total") or 0), "usage": data.get("usage") or {}})
+
+
+class NewsletterAdminMauticSegmentDuplicateView(APIView):
+    """Copy a segment like Mautic's Clone: same filters and settings, a new
+    alias, unpublished, without the source's static members. A copy is never
+    shown in the preference center until an admin turns that on, and never
+    inherits the Subscription List category."""
+
+    permission_classes = [HasMarketingHubAccess]
+
+    LOCK_SECONDS = 30
+
+    def post(self, request, segment_id):
+        protected_response = _ensure_native_segment_is_not_managed(segment_id)
+        if protected_response is not None:
+            return protected_response
+        # A double-click would otherwise create two copies.
+        lock = f"marketing:segment-duplicate:{request.user.pk}:{segment_id}"
+        if not cache.add(lock, 1, timeout=self.LOCK_SECONDS):
+            return Response({"detail": "This segment is already being duplicated."}, status=status.HTTP_409_CONFLICT)
+        try:
+            return self._duplicate(request, segment_id)
+        finally:
+            cache.delete(lock)
+
+    def _duplicate(self, request, segment_id):
+        name = str(request.data.get("name") or "").strip()
+        try:
+            client = MauticClient()
+            source = client.get_segment(segment_id)
+            protected_response = _ensure_segment_not_consent_marked(source)
+            if protected_response is not None:
+                return protected_response
+            filters = _segment_filters(source)
+            metadata = client.get_segment_filter_metadata() if filters else None
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+        name = name or f"Copy of {source.get('name') or f'Segment #{segment_id}'}"
+        category = _segment_category(source)
+        copy = {
+            "name": name[:190],
+            "description": source.get("description") or "",
+            "publicName": name[:190],
+            "isGlobal": _normalize_provider_bool(source.get("isGlobal", False)),
+            "isPreferenceCenter": False,
+            "category": category["id"] if category else None,
+            "isPublished": False,
+        }
+        if filters:
+            # A static source leaves "filters" out: the copy is static too.
+            copy["filters"] = filters
+        try:
+            payload = _parse_native_segment_payload(
+                copy,
+                filter_metadata=metadata,
+                category_checker=lambda value: _category_choice(value, "segment", client=client),
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": f"This segment cannot be copied as it is: {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            segment, identity_response = run_interactive_mutation(
+                request,
+                action=SEGMENT_CREATE,
+                resource="segment",
+                mutate=lambda identity_client: identity_client.create_segment(payload),
+                client_factory=MauticClient,
+                detail=f"duplicate of segment {segment_id}",
+            )
+        except (TemporaryMauticError, PermanentMauticError) as exc:
+            return _native_segment_provider_error_response(exc)
+        if identity_response is not None:
+            return identity_response
+        return Response(_normalize_mautic_segment(segment), status=status.HTTP_201_CREATED)
 
 
 class NewsletterAdminMauticSegmentContactsView(APIView):

@@ -34,6 +34,7 @@ DOMAIN_DEFINITIONS = {
     "pages": ("Landing Pages", ("page.",)),
     "reports": ("Reports", ("report.",)),
     "assets": ("Assets", ("asset.",)),
+    "categories": ("Categories", ("category.",)),
     "delivery": ("Delivery", ("newsletter.",)),
     "access": ("Access", ("connection.",)),
 }
@@ -149,6 +150,12 @@ EXTRA_FILTER_ACTIONS = frozenset(
         "asset.update",
         "asset.delete",
         "asset.file.download",
+        "contact.note.update",
+        "contact.note.delete",
+        "contact.data.export",
+        "category.create",
+        "category.update",
+        "category.delete",
     }
 )
 

@@ -64,6 +64,8 @@ class AudienceIdentityEndpointTests(TestCase):
         client.get_segment.return_value = {"id": 22, "name": "Static", "filters": []}
         client.get_contact.return_value = {"id": 51}
         client.get_segment_filter_metadata.return_value = {"objects": [], "fields": []}
+        # Delete first checks where the segment is used; this one is unused.
+        client.get_segment_usage.return_value = {"total": 0, "usage": {}}
         return client
 
     def _patch_provider_reads(self):

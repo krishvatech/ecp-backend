@@ -527,6 +527,23 @@ def set_admin_contact_tag(
     return get_admin_contact(contact_id)
 
 
+def contact_notes_page(client: MauticClient, mautic_contact_id, *, start: int = 0, limit: int = 100, search: str = "") -> dict[str, Any]:
+    """{"total", "notes"} for one page of a contact's notes. The plugin reader
+    adds author and dates; a search, or a plugin without the reader, uses the
+    native list (text, type and dateTime only)."""
+    if not search and str(mautic_contact_id).isdigit():
+        try:
+            data = client.list_contact_notes_detailed(mautic_contact_id, start=start, limit=limit)
+        except PermanentMauticError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+        else:
+            if isinstance(data, dict) and isinstance(data.get("notes"), list):
+                return data
+    params = {"start": start, "limit": limit, **({"search": search} if search else {})}
+    return client.list_contact_notes(mautic_contact_id, **params)
+
+
 def list_admin_contact_notes(mautic_contact_id, *, page: int = 1, page_size: int = 25, search: str = "") -> dict[str, Any]:
     page = max(1, int(page))
     page_size = max(1, min(int(page_size), 100))
@@ -534,7 +551,7 @@ def list_admin_contact_notes(mautic_contact_id, *, page: int = 1, page_size: int
     params = {"start": start, "limit": page_size}
     if str(search or "").strip():
         params["search"] = str(search).strip()
-    data = MauticClient().list_contact_notes(mautic_contact_id, **params)
+    data = contact_notes_page(MauticClient(), mautic_contact_id, **params)
     notes = []
     for note in _dict_values(data, "notes"):
         notes.append(
@@ -582,6 +599,55 @@ def create_admin_contact_note(
         "dateAdded": note.get("dateAdded") or note.get("date_added"),
         "dateModified": note.get("dateModified") or note.get("date_modified"),
     }
+
+
+NOTE_TYPES = ("general", "email", "call", "meeting")
+NOTE_MAX_LENGTH = 65000
+
+
+def _note_payload(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    if not partial or "text" in payload:
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise ValueError("Write the note's text.")
+        if len(text) > NOTE_MAX_LENGTH:
+            raise ValueError("The note is too long.")
+        changes["text"] = text
+    if "type" in payload:
+        note_type = str(payload.get("type") or "").strip()
+        if note_type not in NOTE_TYPES:
+            raise ValueError("Note type must be general, email, call or meeting.")
+        changes["type"] = note_type
+    if partial and not changes:
+        raise ValueError("Nothing to change.")
+    return changes
+
+
+def contact_note(mautic_contact_id, note_id, *, reader: MauticClient | None = None) -> dict[str, Any]:
+    """The note, if it belongs to that contact; else LookupError (a 404 to the
+    admin), so a note of another contact can never be changed through this one."""
+    note = (reader or MauticClient()).get_note(note_id)
+    lead = note.get("lead")
+    owner = lead.get("id") if isinstance(lead, dict) else lead
+    if str(owner or "") != str(mautic_contact_id):
+        raise LookupError("Note not found for this contact.")
+    return note
+
+
+def _normalized_note(note: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(note.get("id") or ""),
+        "text": str(note.get("text") or "").strip(),
+        "type": str(note.get("type") or "general").strip(),
+        "createdByUser": note.get("createdByUser"),
+        "dateAdded": note.get("dateAdded") or note.get("date_added"),
+        "dateModified": note.get("dateModified") or note.get("date_modified"),
+    }
+
+
+def update_admin_contact_note(note_id, payload: dict[str, Any], *, client: MauticClient | None = None) -> dict[str, Any]:
+    return _normalized_note((client or MauticClient()).update_note(note_id, _note_payload(payload, partial=True)))
 
 
 def add_admin_contact_dnc(

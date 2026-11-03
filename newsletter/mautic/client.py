@@ -27,6 +27,9 @@ from .operations import (
     ASSET_CREATE,
     ASSET_DELETE,
     ASSET_UPDATE,
+    CATEGORY_CREATE,
+    CATEGORY_DELETE,
+    CATEGORY_UPDATE,
     REPORT_CREATE,
     REPORT_DELETE,
     REPORT_UPDATE,
@@ -54,6 +57,8 @@ from .operations import (
     CONTACT_DNC_REMOVE,
     CONTACT_IMPORT_CREATE,
     CONTACT_NOTE_CREATE,
+    CONTACT_NOTE_DELETE,
+    CONTACT_NOTE_UPDATE,
     COMPANY_IMPORT_CREATE,
     CONTACT_TAG_ADD,
     EMAIL_CONTACT_SEND,
@@ -802,6 +807,52 @@ class MauticClient:
             )
         return data
 
+    def get_category_overview(self) -> dict[str, dict[int, Any]]:
+        """{"usage": {id: {"items": {table: n}, "contact_preferences": {...}}},
+        "published": {id: bool}} (service read; the native API omits isPublished)."""
+        data = self._json_object(self._request("GET", "ecp/categories/usage"), "Mautic category usage")
+        usage, published = data.get("usage"), data.get("published")
+        if not isinstance(usage, dict) or not isinstance(published, dict):
+            raise TemporaryMauticError("Mautic category usage returned an invalid response")
+        return {
+            "usage": {int(key): value for key, value in usage.items() if str(key).isdigit() and isinstance(value, dict)},
+            "published": {int(key): bool(value) for key, value in published.items() if str(key).isdigit()},
+        }
+
+    def _category_write(self, method: str, bridge_path: str, native_path: str, operation: str, payload: dict[str, Any] | None):
+        if self._uses_asserted_user():
+            return self._bridge_request(method, bridge_path, operation=operation, data=payload)
+        return self._request(method, native_path, data=payload)
+
+    def create_category(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._category_write("POST", "ecp/bridge/categories/new", "categories/new", CATEGORY_CREATE, payload)
+        category = self._json_object(response, "Mautic category creation").get("category")
+        if not isinstance(category, dict) or not category.get("id"):
+            raise TemporaryMauticError("Mautic category creation returned an invalid response")
+        return category
+
+    def update_category(self, category_id, payload: dict[str, Any]) -> dict[str, Any]:
+        category_id = self._numeric_id(category_id, "category")
+        response = self._category_write("PATCH", f"ecp/bridge/categories/{category_id}/edit", f"categories/{category_id}/edit",
+                                        CATEGORY_UPDATE, payload)
+        category = self._json_object(response, "Mautic category update").get("category")
+        if not isinstance(category, dict) or not category.get("id"):
+            raise TemporaryMauticError("Mautic category update returned an invalid response")
+        return category
+
+    def delete_category(self, category_id) -> None:
+        category_id = self._numeric_id(category_id, "category")
+        self._category_write("DELETE", f"ecp/bridge/categories/{category_id}/delete", f"categories/{category_id}/delete",
+                             CATEGORY_DELETE, None)
+
+    def get_segment_usage(self, segment_id) -> dict[str, Any]:
+        """Where a segment is used: campaigns, emails, segments, forms, reports, point triggers (service read)."""
+        segment_id = self._numeric_id(segment_id, "segment")
+        data = self._json_object(self._request("GET", f"ecp/segments/{segment_id}/usage"), "Mautic segment usage")
+        if not isinstance(data.get("usage"), dict):
+            raise TemporaryMauticError("Mautic segment usage returned an invalid response")
+        return data
+
     def list_themes(self, **params) -> dict[str, Any]:
         response = self._request("GET", "themes", params=params or None)
         data = self._json_object(response, "Mautic theme list")
@@ -1005,6 +1056,16 @@ class MauticClient:
             raise TemporaryMauticError("Mautic contact notes returned invalid notes")
         return data
 
+    def list_contact_notes_detailed(self, contact_id, *, start: int = 0, limit: int = 100) -> dict[str, Any]:
+        """A contact's notes, newest first, with author and dates (the native
+        API leaves those out). Needs the ECP plugin's contact-notes reader."""
+        normalized = self._numeric_id(contact_id, "contact")
+        response = self._request("GET", f"ecp/contacts/{normalized}/notes", params={"start": start, "limit": limit})
+        data = self._json_object(response, "Mautic contact notes")
+        if not isinstance(data.get("notes"), list):
+            raise TemporaryMauticError("Mautic contact notes returned invalid notes")
+        return data
+
     def create_note(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._uses_asserted_user():
             response = self._bridge_request(
@@ -1020,6 +1081,39 @@ class MauticClient:
         if not isinstance(note, dict) or not note.get("id"):
             raise TemporaryMauticError("Mautic note creation returned an invalid response")
         return note
+
+    def get_note(self, note_id) -> dict[str, Any]:
+        normalized = self._numeric_id(note_id, "note")
+        note = self._json_object(self._request("GET", f"notes/{normalized}"), "Mautic note").get("note")
+        if not isinstance(note, dict) or not note.get("id"):
+            raise TemporaryMauticError("Mautic note returned an invalid response")
+        return note
+
+    def update_note(self, note_id, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._numeric_id(note_id, "note")
+        if self._uses_asserted_user():
+            response = self._bridge_request("PATCH", f"ecp/bridge/notes/{normalized}/edit", operation=CONTACT_NOTE_UPDATE, data=payload)
+        else:
+            response = self._request("PATCH", f"notes/{normalized}/edit", data=payload)
+        note = self._json_object(response, "Mautic note update").get("note")
+        if not isinstance(note, dict) or not note.get("id"):
+            raise TemporaryMauticError("Mautic note update returned an invalid response")
+        return note
+
+    def delete_note(self, note_id) -> None:
+        normalized = self._numeric_id(note_id, "note")
+        if self._uses_asserted_user():
+            self._bridge_request("DELETE", f"ecp/bridge/notes/{normalized}/delete", operation=CONTACT_NOTE_DELETE)
+        else:
+            self._request("DELETE", f"notes/{normalized}/delete")
+
+    def get_contact_segments(self, contact_id) -> list[dict[str, Any]]:
+        """The contact's segments with their names (native read)."""
+        contact = self._numeric_id(contact_id, "contact")
+        data = self._json_object(self._request("GET", f"contacts/{contact}/segments"), "Mautic contact segments")
+        rows = data.get("lists")
+        rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
+        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
 
     def add_contact_dnc(
         self,
@@ -2082,11 +2176,14 @@ class MauticClient:
 
     @staticmethod
     def _email_body(payload: dict[str, Any]) -> dict[str, Any]:
-        """Request body for an email update. Form data, except when attachments
-        are cleared: a form cannot send an empty list (Mautic refuses an empty
-        value as an invalid choice), JSON can."""
-        if "assetAttachments" in payload and not payload["assetAttachments"]:
+        """Request body for an email update. Form data, except when a list is
+        cleared (attachments, excluded segments): a form cannot send an empty
+        list (Mautic refuses an empty value as an invalid choice), JSON can."""
+        if any(isinstance(value, (list, tuple)) and not value for value in payload.values()):
             return {"json": payload}
+        # A blank category is ignored by Mautic; only a JSON null clears it.
+        if "category" in payload and payload["category"] in ("", None):
+            return {"json": {**payload, "category": None}}
         return {"data": MauticClient._email_form_data(payload)}
 
     @staticmethod
@@ -2118,6 +2215,15 @@ class MauticClient:
                 f"{context} returned an invalid response"
             )
         return email
+
+    def get_email_excluded_segments(self, email_id) -> list[dict[str, Any]]:
+        """The segments an email excludes (the native API leaves them out)."""
+        normalized = self._numeric_id(email_id, "email")
+        data = self._json_object(self._request("GET", f"ecp/emails/{normalized}/excluded-segments"), "Mautic email excluded segments")
+        rows = data.get("excludedLists")
+        if not isinstance(rows, list):
+            raise TemporaryMauticError("Mautic email excluded segments returned an invalid response")
+        return [row for row in rows if isinstance(row, dict) and row.get("id")]
 
     def get_email(self, email_id: int | str) -> dict[str, Any]:
         email_id = str(email_id or "").strip()
@@ -3063,6 +3169,18 @@ class MauticClient:
             )
         return self._campaign_from_response(response, "Mautic campaign update")
 
+    def update_campaign_settings(self, campaign_id, payload: dict[str, Any]) -> dict[str, Any]:
+        """Category, restart and publish window only, as JSON: only JSON clears
+        a category. The workflow is not sent, so a PATCH leaves it as it is."""
+        campaign_id = self._numeric_id(campaign_id, "campaign")
+        if self._uses_asserted_user():
+            response = self._bridge_request(
+                "PATCH", f"ecp/bridge/campaigns/{campaign_id}/edit", operation=CAMPAIGN_UPDATE, json=payload
+            )
+        else:
+            response = self._request("PATCH", f"campaigns/{campaign_id}/edit", json=payload)
+        return self._campaign_from_response(response, "Mautic campaign update")
+
     def delete_campaign(self, campaign_id: int | str) -> dict[str, Any]:
         campaign_id = str(campaign_id or "").strip()
         if not campaign_id:
@@ -3267,6 +3385,13 @@ class MauticClient:
         response = self._request("GET", f"forms/{normalized}")
         return self._form_from_response(response, "Mautic form detail")
 
+    def get_form_profiling_limit(self, form_id) -> int | None:
+        """The Form's progressive profiling limit (the native API omits it)."""
+        normalized = self._numeric_id(form_id, "form")
+        data = self._json_object(self._request("GET", f"ecp/bridge/forms/{normalized}/settings"), "Mautic form settings")
+        limit = data.get("progressiveProfilingLimit")
+        return int(limit) if isinstance(limit, int) and limit > 0 else None
+
     def _form_bridge_request(self, method: str, path: str, *, operation: str, context: str, **kwargs):
         # Form writes are attributed to a human Mautic user or not made at
         # all: there is deliberately no service-account fallback.
@@ -3287,7 +3412,7 @@ class MauticClient:
             "ecp/bridge/forms/new",
             operation=FORM_CREATE,
             context="Mautic form creation",
-            data=self._email_form_data(payload),
+            data=self._email_form_data(self._form_clears(payload)),
         )
 
     def update_form(self, form_id, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3303,8 +3428,14 @@ class MauticClient:
             f"ecp/bridge/forms/{normalized}/edit",
             operation=FORM_UPDATE,
             context="Mautic form update",
-            data=self._email_form_data(payload),
+            data=self._email_form_data(self._form_clears(payload)),
         )
+
+    @staticmethod
+    def _form_clears(payload: dict[str, Any]) -> dict[str, Any]:
+        """None (clear a category, date or limit) travels as "": form encoding
+        drops None, and the bridge turns "" back into a clear."""
+        return {key: "" if value is None else value for key, value in payload.items()}
 
     @staticmethod
     def _numeric_id(value, label: str) -> str:
@@ -3912,19 +4043,29 @@ class MauticClient:
 
         return MauticClient._campaign_form_data(payload)
 
+    @staticmethod
+    def _segment_body(payload: dict[str, Any]) -> dict[str, Any]:
+        """Request body for a segment write. Form encoding cannot say "clear":
+        a null category or an empty filter list encodes to nothing, so Mautic
+        keeps the old value. Only JSON carries those; everything else stays
+        form-encoded as before."""
+        if isinstance(payload, dict) and any(value is None or value == [] for value in payload.values()):
+            return {"json": payload}
+        return {"data": MauticClient._segment_form_data(payload)}
+
     def create_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._uses_asserted_user():
             response = self._bridge_request(
                 "POST",
                 "ecp/bridge/segments/new",
                 operation=SEGMENT_CREATE,
-                data=self._segment_form_data(payload),
+                **self._segment_body(payload),
             )
         else:
             response = self._request(
                 "POST",
                 "segments/new",
-                data=self._segment_form_data(payload),
+                **self._segment_body(payload),
             )
         return self._segment_from_response(response, "Mautic segment creation")
 
@@ -3942,13 +4083,13 @@ class MauticClient:
                 "PATCH",
                 f"ecp/bridge/segments/{segment_id}/edit",
                 operation=SEGMENT_UPDATE,
-                data=self._segment_form_data(payload),
+                **self._segment_body(payload),
             )
         else:
             response = self._request(
                 "PATCH",
                 f"segments/{segment_id}/edit",
-                data=self._segment_form_data(payload),
+                **self._segment_body(payload),
             )
         return self._segment_from_response(response, "Mautic segment update")
 

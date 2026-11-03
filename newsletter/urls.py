@@ -36,6 +36,10 @@ from .admin_views import (
     NewsletterAdminCategorySyncMauticView,
     NewsletterAdminMauticSegmentListView,
     NewsletterAdminMauticSegmentDetailView,
+    NewsletterAdminContactNoteDetailView,
+    NewsletterAdminContactDataExportView,
+    NewsletterAdminMauticSegmentDuplicateView,
+    NewsletterAdminMauticSegmentUsageView,
     NewsletterAdminMauticSegmentFilterChoicesView,
     NewsletterAdminMauticSegmentFilterMetadataView,
     NewsletterAdminMauticSegmentContactDetailView,
@@ -138,6 +142,7 @@ from .native_campaign_views import (
     NewsletterAdminMauticCampaignContactsView,
     NewsletterAdminMauticCampaignDetailView,
     NewsletterAdminMauticCampaignStatsView,
+    NewsletterAdminMauticCampaignSettingsView,
     NewsletterAdminMauticCampaignDuplicateView,
     NewsletterAdminMauticCampaignEventView,
     NewsletterAdminMauticCampaignListCreateView,
@@ -151,6 +156,7 @@ from .mautic_analytics_views import (
 )
 from .mautic_diagnostics_views import NewsletterAdminMauticDiagnosticsView
 from .category_delete_views import NewsletterAdminCategoryDeleteView
+from .mautic_category_views import NewsletterAdminMauticCategoryDetailView, NewsletterAdminMauticCategoryListView
 from .contact_delete_views import (
     NewsletterAdminContactDeleteCancelView,
     NewsletterAdminContactDeleteDetailView,
@@ -406,6 +412,11 @@ urlpatterns = [
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/contacts/",
         NewsletterAdminMauticCampaignContactsView.as_view(),
         name="newsletter-admin-mautic-campaign-contacts",
+    ),
+    path(
+        "newsletter/admin/mautic-campaigns/<str:campaign_id>/settings/",
+        NewsletterAdminMauticCampaignSettingsView.as_view(),
+        name="newsletter-admin-mautic-campaign-settings",
     ),
     path(
         "newsletter/admin/mautic-campaigns/<str:campaign_id>/stats/",
@@ -947,6 +958,16 @@ urlpatterns = [
         name="newsletter-admin-contact-tag-detail",
     ),
     path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/notes/<str:note_id>/",
+        NewsletterAdminContactNoteDetailView.as_view(),
+        name="newsletter-admin-contact-note-detail",
+    ),
+    path(
+        "newsletter/admin/contacts/<str:mautic_contact_id>/data-export/",
+        NewsletterAdminContactDataExportView.as_view(),
+        name="newsletter-admin-contact-data-export",
+    ),
+    path(
         "newsletter/admin/contacts/<str:mautic_contact_id>/notes/",
         NewsletterAdminContactNotesView.as_view(),
         name="newsletter-admin-contact-notes",
@@ -1100,6 +1121,26 @@ urlpatterns = [
         "newsletter/admin/mautic/segments/<str:segment_id>/",
         NewsletterAdminMauticSegmentDetailView.as_view(),
         name="newsletter-admin-mautic-segment-detail",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/<str:segment_id>/usage/",
+        NewsletterAdminMauticSegmentUsageView.as_view(),
+        name="newsletter-admin-mautic-segment-usage",
+    ),
+    path(
+        "newsletter/admin/mautic/segments/<str:segment_id>/duplicate/",
+        NewsletterAdminMauticSegmentDuplicateView.as_view(),
+        name="newsletter-admin-mautic-segment-duplicate",
+    ),
+    path(
+        "newsletter/admin/mautic-categories/",
+        NewsletterAdminMauticCategoryListView.as_view(),
+        name="newsletter-admin-mautic-category-list",
+    ),
+    path(
+        "newsletter/admin/mautic-categories/<int:category_id>/",
+        NewsletterAdminMauticCategoryDetailView.as_view(),
+        name="newsletter-admin-mautic-category-detail",
     ),
     path(
         "newsletter/admin/mautic/segments/<str:segment_id>/contacts/",

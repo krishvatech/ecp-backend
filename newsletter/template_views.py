@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from . import marketing_cache
 from .email_delivery_options import normalize_delivery_options, parse_delivery_options
+from .mautic_publish_window import parse_window
 from .campaign_services import deliver_temporary_test_email
 from .email_design_services import (
     TemplateSaveInProgress,
@@ -74,8 +75,12 @@ _TEMPLATE_FIELDS = {
     "language",
     # Delivery options Mautic keeps on the email (email_delivery_options).
     "replyToAddress",
+    "bccAddress",
     "utmTags",
     "assetAttachments",
+    # When the template may be sent (a campaign cannot send it outside).
+    "publishUp",
+    "publishDown",
 }
 
 # Two-letter languages only: Mautic 7.1.3 matches a contact's locale by its
@@ -136,6 +141,8 @@ def _normalize_template(email: dict[str, Any]) -> dict[str, Any]:
         "category": normalized_category,
         "template": str(email.get("template") or ""),
         "isPublished": _provider_bool(email.get("isPublished", False)),
+        "publishUp": email.get("publishUp"),
+        "publishDown": email.get("publishDown"),
         "dateAdded": email.get("dateAdded"),
         "dateModified": email.get("dateModified"),
         "sentCount": email.get("sentCount"),
@@ -246,6 +253,9 @@ def _parse_template_payload(data, *, partial: bool = False) -> dict[str, Any]:
 
     # DeliveryOptionsError is a ValueError: it reaches the caller like the rest.
     payload.update(parse_delivery_options(data))
+    # PublishWindowError is a ValueError too. A cleared date travels as "":
+    # form encoding drops None, and Mautic clears a date sent empty.
+    payload.update({key: "" if value is None else value for key, value in parse_window(data).items()})
 
     if "isPublished" in data:
         payload["isPublished"] = _parse_bool(

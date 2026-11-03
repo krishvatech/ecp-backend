@@ -1,3 +1,4 @@
+from newsletter.mautic import TemporaryMauticError
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -53,13 +54,19 @@ class FamilyRulesTests(TestCase):
         client.get_email.return_value = email(
             80, variantChildren=[email(81)], translationChildren=[email(82, language="fr")], replyToAddress="team@x.test",
             utmTags={"utmSource": "imaa", "utmMedium": "email"}, assetAttachments=[{"id": 5, "title": "Brochure"}])
+        client.get_email_excluded_segments.return_value = [{"id": 6, "name": "Staff"}]
         sync_family_shared_fields(client, "80", {"fromName": "IMAA", "fromAddress": "news@x.test", "lists": [7], "subject": "S"})
-        delivery = {"replyToAddress": "team@x.test", "utmTags": {"utmSource": "imaa", "utmMedium": "email", "utmCampaign": "", "utmContent": ""},
-                    "assetAttachments": ["5"]}
+        delivery = {"replyToAddress": "team@x.test", "bccAddress": "", "utmTags": {"utmSource": "imaa", "utmMedium": "email", "utmCampaign": "", "utmContent": ""},
+                    "assetAttachments": ["5"], "excludedLists": ["6"]}
         self.assertEqual([c.args for c in client.update_email.call_args_list], [
             ("81", {"fromName": "IMAA", "fromAddress": "news@x.test", **delivery, "emailType": "list", "lists": [7]}),
             ("82", {"fromName": "IMAA", "fromAddress": "news@x.test", **delivery, "emailType": "list"}),
         ])
+        # Exclusions that cannot be read are not copied, so versions keep theirs.
+        client.update_email.reset_mock()
+        client.get_email_excluded_segments.side_effect = TemporaryMauticError("down")
+        sync_family_shared_fields(client, "80", {"lists": [7]})
+        self.assertNotIn("excludedLists", client.update_email.call_args_list[0].args[1])
 
     @override_settings(MAUTIC_SYNC_ENABLED=True)
     def test_deleting_a_draft_deletes_its_versions_first(self):

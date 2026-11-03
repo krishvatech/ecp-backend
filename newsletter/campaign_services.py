@@ -210,18 +210,27 @@ def sync_family_shared_fields(client, email_id, payload) -> None:
     Nothing to do (one read) for a broadcast without variants or translations.
     """
     email = client.get_email(email_id)
-    shared = {field: payload[field] for field in FAMILY_SHARED_FIELDS if field in payload}
-    # Delivery options live on the main Mautic email only; versions share them.
-    options = normalize_delivery_options(email)
-    shared.update({"replyToAddress": options["replyToAddress"], "utmTags": options["utmTags"],
-                   "assetAttachments": [asset["id"] for asset in options["assetAttachments"]]})
-    shared["emailType"] = "list"
+    versions = []
     for key, extra in (("variantChildren", {"lists": payload.get("lists", [])}), ("translationChildren", {})):
         rows = email.get(key)
         rows = rows.values() if isinstance(rows, dict) else rows if isinstance(rows, list) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("id") is not None:
-                client.update_email(str(row["id"]), {**shared, **extra})
+        versions += [(str(row["id"]), extra) for row in rows if isinstance(row, dict) and row.get("id") is not None]
+    if not versions:
+        return
+    shared = {field: payload[field] for field in FAMILY_SHARED_FIELDS if field in payload}
+    # Delivery options live on the main Mautic email only; versions share them.
+    options = normalize_delivery_options(email)
+    shared.update({"replyToAddress": options["replyToAddress"], "bccAddress": options["bccAddress"], "utmTags": options["utmTags"],
+                   "assetAttachments": [asset["id"] for asset in options["assetAttachments"]]})
+    # Mautic's email API never returns exclusions: copy them only when the
+    # plugin could read them, or the versions' own would be wiped.
+    try:
+        shared["excludedLists"] = [str(row["id"]) for row in client.get_email_excluded_segments(email_id)]
+    except (TemporaryMauticError, PermanentMauticError):
+        logger.warning("Excluded segments of email %s could not be read; versions keep theirs", email_id)
+    shared["emailType"] = "list"
+    for version_id, extra in versions:
+        client.update_email(version_id, {**shared, **extra})
 
 
 def sync_campaign_to_mautic(campaign, *, actor=None, client=None):

@@ -112,7 +112,7 @@ class EnsureCategorySegmentTests(SegmentRecoveryBase):
         client.create_segment.assert_called_once()
         payload = client.create_segment.call_args.args[0]
         self.assertEqual(payload["alias"], "news")
-        self.assertEqual(payload["filters"], [])
+        self.assertNotIn("filters", payload)  # static: no filters at all
         category.refresh_from_db()
         self.assertEqual(category.mautic_segment_id, "2")
 
