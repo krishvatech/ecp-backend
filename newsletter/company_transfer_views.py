@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import secrets
 
 from django.http import HttpResponse
 from rest_framework import status
@@ -51,6 +53,7 @@ logger = logging.getLogger(__name__)
 EXPORT_CREATE = "company.export.create"
 EXPORT_DOWNLOAD = "company.export.download"
 EXPORT_DELETE = "company.export.delete"
+_ATTEMPT_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
 def _error(message: str, code: str, http_status: int, **extra) -> Response:
@@ -100,6 +103,9 @@ class NewsletterAdminCompanyImportPreviewView(APIView):
             "preview": parsed["rows"][:PREVIEW_ROWS],
             "rows": len(parsed["rows"]),
             "checks": checks,
+            # Sent back with Start: a double-click or retry of this preview is
+            # caught, while choosing the file again can import it again.
+            "attempt": secrets.token_hex(16),
         })
         response["Cache-Control"] = "no-store, private"
         return response
@@ -123,6 +129,9 @@ class NewsletterAdminCompanyImportListCreateView(APIView):
         mode = str(request.data.get("mode") or "")
         if mode not in MODES:
             return _error("Choose whether existing companies are updated or skipped.", "invalid_company_import", status.HTTP_400_BAD_REQUEST)
+        attempt = str(request.data.get("attempt") or "")
+        if attempt and not _ATTEMPT_RE.match(attempt):
+            return _error("Choose the file again and retry.", "invalid_company_import", status.HTTP_400_BAD_REQUEST)
         try:
             fields = _fields()
             parsed = read_csv(upload)
@@ -136,7 +145,7 @@ class NewsletterAdminCompanyImportListCreateView(APIView):
             return _error("No row has a company name, so nothing would be imported.", "invalid_company_import", status.HTTP_400_BAD_REQUEST)
         content = prepared_csv(parsed["rows"], mapping)
         key = hashlib.sha256(b"|".join([content, json.dumps(mapping, sort_keys=True).encode(), mode.encode(),
-                                        str(request.user.pk).encode()])).hexdigest()[:40]
+                                        str(request.user.pk).encode(), attempt.encode()])).hexdigest()[:40]
         # prepared_csv heads each column with its field alias.
         config = {"mapping": {alias: alias for alias in mapping.values()}, "mode": mode, "idempotency_key": key,
                   "original_filename": str(getattr(upload, "name", "") or "companies.csv")[:191]}

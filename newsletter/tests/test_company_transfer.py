@@ -120,6 +120,7 @@ class CompanyImportApiTests(TestCase):
         self.assertEqual(body["mapping"], {"Company Name": "companyname", "Website": "companywebsite"})
         self.assertEqual((body["rows"], body["checks"]["without_name"]), (2, 0))
         self.assertEqual([f["alias"] for f in body["fields"]][0], "companyname")
+        self.assertRegex(body["attempt"], r"^[a-f0-9]{32}$")
         self.assertEqual(result["Cache-Control"], "no-store, private")
 
     def test_start_queues_only_mapped_columns_as_the_admin(self):
@@ -134,6 +135,21 @@ class CompanyImportApiTests(TestCase):
         self.assertEqual(len(kwargs["config"]["idempotency_key"]), 40)
         entry = MauticIdentityAuditLog.objects.get()
         self.assertEqual((entry.action, entry.resource_id, entry.status), (COMPANY_IMPORT_CREATE, "7", "succeeded"))
+
+    def test_the_same_attempt_is_one_import_but_a_new_preview_can_import_again(self):
+        self.asserted.create_company_import.return_value = ({"id": 7, "status_name": "imported"}, False)
+        url = reverse("newsletter-admin-company-import-list")
+        mapping = json.dumps({"Company Name": "companyname"})
+        keys = []
+        for attempt in ("a" * 32, "a" * 32, "b" * 32):
+            response = self.api.post(url, {"file": upload(self.csv), "mode": "create_or_update", "mapping": mapping, "attempt": attempt},
+                                     format="multipart")
+            self.assertEqual(response.status_code, 201, response.json())
+            keys.append(self.asserted.create_company_import.call_args.kwargs["config"]["idempotency_key"])
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[0], keys[2])
+        bad = self.api.post(url, {"file": upload(self.csv), "mode": "create_or_update", "mapping": mapping, "attempt": "x"}, format="multipart")
+        self.assertEqual(bad.status_code, 400)
 
     def test_start_refusals(self):
         url = reverse("newsletter-admin-company-import-list")
