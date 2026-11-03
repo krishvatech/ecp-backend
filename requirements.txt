@@ -15,6 +15,7 @@ daphne==4.1.2
 psycopg[binary]==3.2.10
 redis==5.0.8
 celery==5.4.0
+kombu==5.6.2
 django-celery-beat==2.8.1
 
 # Object storage
