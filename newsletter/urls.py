@@ -193,6 +193,14 @@ from .asset_views import (
     NewsletterAdminAssetListCreateView,
     NewsletterAdminAssetMetadataView,
 )
+from .dynamic_content_views import (
+    NewsletterAdminDynamicContentDetailView,
+    NewsletterAdminDynamicContentDuplicateView,
+    NewsletterAdminDynamicContentInsightsView,
+    NewsletterAdminDynamicContentListCreateView,
+    NewsletterAdminDynamicContentRuleMetadataView,
+    NewsletterAdminDynamicContentSlotsView,
+)
 from .focus_views import (
     NewsletterAdminFocusDetailView,
     NewsletterAdminFocusDuplicateView,
@@ -825,6 +833,29 @@ urlpatterns = [
         "newsletter/admin/focus-items/<int:focus_id>/insights/",
         NewsletterAdminFocusInsightsView.as_view(),
         name="newsletter-admin-focus-insights",
+    ),
+    # Dynamic Content (Mautic page blocks per visitor). Static segments first, ids numeric.
+    path("newsletter/admin/dynamic-content/", NewsletterAdminDynamicContentListCreateView.as_view(), name="newsletter-admin-dynamic-content-list"),
+    path(
+        "newsletter/admin/dynamic-content/rule-metadata/",
+        NewsletterAdminDynamicContentRuleMetadataView.as_view(),
+        name="newsletter-admin-dynamic-content-rule-metadata",
+    ),
+    path("newsletter/admin/dynamic-content/slots/", NewsletterAdminDynamicContentSlotsView.as_view(), name="newsletter-admin-dynamic-content-slots"),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/",
+        NewsletterAdminDynamicContentDetailView.as_view(),
+        name="newsletter-admin-dynamic-content-detail",
+    ),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/duplicate/",
+        NewsletterAdminDynamicContentDuplicateView.as_view(),
+        name="newsletter-admin-dynamic-content-duplicate",
+    ),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/insights/",
+        NewsletterAdminDynamicContentInsightsView.as_view(),
+        name="newsletter-admin-dynamic-content-insights",
     ),
     # Reports (Mautic report builder). Report ids are numeric, so the static
     # "sources/" and "exports/" segments never collide with them.

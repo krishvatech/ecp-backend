@@ -30,6 +30,9 @@ from .operations import (
     CATEGORY_CREATE,
     CATEGORY_DELETE,
     CATEGORY_UPDATE,
+    DYNAMIC_CONTENT_CREATE,
+    DYNAMIC_CONTENT_DELETE,
+    DYNAMIC_CONTENT_UPDATE,
     FOCUS_CREATE,
     FOCUS_DELETE,
     FOCUS_UPDATE,
@@ -3097,6 +3100,62 @@ class MauticClient:
         if not isinstance(focus, dict) or focus.get("id") is None:
             raise TemporaryMauticError(f"{context} returned an invalid response")
         return focus
+
+    # Dynamic Content -----------------------------------------------------------
+    # Reads are the bridge's list/detail/insights/slots (service user): the
+    # native API leaves out the published state. Writes are form-encoded to the
+    # bridge as the asserted user, which keeps the HTML content the native API
+    # would strip; rules travel as one JSON field so an empty list survives.
+
+    def list_dynamic_contents(self, **params) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "ecp/dynamic-content", params=params or None), "Mautic Dynamic Content list")
+        if not isinstance(data.get("dynamicContents"), list):
+            raise TemporaryMauticError("Mautic Dynamic Content list returned an invalid response")
+        return data
+
+    def get_dynamic_content(self, item_id) -> dict[str, Any]:
+        item = self._numeric_id(item_id, "Dynamic Content")
+        return self._dynamic_content_from(self._request("GET", f"ecp/dynamic-content/{item}"), "Mautic Dynamic Content lookup")
+
+    def get_dynamic_content_insights(self, item_id, *, days: int = 30) -> dict[str, Any]:
+        item = self._numeric_id(item_id, "Dynamic Content")
+        data = self._json_object(self._request("GET", f"ecp/dynamic-content/{item}/insights", params={"days": days}),
+                                 "Mautic Dynamic Content insights")
+        if not isinstance(data.get("totals"), dict) or not isinstance(data.get("daily"), list) or not isinstance(data.get("usage"), dict):
+            raise TemporaryMauticError("Mautic Dynamic Content insights returned an invalid response")
+        return data
+
+    def get_dynamic_content_slots(self) -> list[dict[str, Any]]:
+        data = self._json_object(self._request("GET", "ecp/dynamic-content/slots"), "Mautic Dynamic Content slots")
+        if not isinstance(data.get("slots"), list):
+            raise TemporaryMauticError("Mautic Dynamic Content slots returned an invalid response")
+        return data["slots"]
+
+    def _require_asserted_dynamic_content(self) -> None:
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic Dynamic Content changes require per-user Mautic identity")
+
+    def create_dynamic_content(self, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_dynamic_content()
+        response = self._bridge_request("POST", "ecp/bridge/dynamic-content/new", operation=DYNAMIC_CONTENT_CREATE, data=form)
+        return self._dynamic_content_from(response, "Mautic Dynamic Content creation")
+
+    def update_dynamic_content(self, item_id, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_dynamic_content()
+        item = self._numeric_id(item_id, "Dynamic Content")
+        response = self._bridge_request("PATCH", f"ecp/bridge/dynamic-content/{item}/edit", operation=DYNAMIC_CONTENT_UPDATE, data=form)
+        return self._dynamic_content_from(response, "Mautic Dynamic Content update")
+
+    def delete_dynamic_content(self, item_id) -> None:
+        self._require_asserted_dynamic_content()
+        item = self._numeric_id(item_id, "Dynamic Content")
+        self._bridge_request("DELETE", f"ecp/bridge/dynamic-content/{item}/delete", operation=DYNAMIC_CONTENT_DELETE)
+
+    def _dynamic_content_from(self, response, context: str) -> dict[str, Any]:
+        item = self._json_object(response, context).get("dynamicContent")
+        if not isinstance(item, dict) or item.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return item
 
     # Reports -------------------------------------------------------------------
     # Reads are the bridge's metadata/definition/data endpoints (service user);

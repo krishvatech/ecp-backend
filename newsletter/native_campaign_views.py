@@ -906,6 +906,54 @@ def _validate_event_graph(
                 )
 
 
+_ANCHOR_PATHS = {"inaction": "no", "action": "yes"}
+
+
+def _validate_connection_rules(events: list[dict[str, Any]], capabilities: dict[str, Any] | None) -> None:
+    """Reject steps placed where Mautic would never run them.
+
+    Mautic's own builder applies each event's ``connectionRestrictions`` in its
+    browser code only (campaign.js campaignBuilderValidateConnection); its API
+    saves any graph. This is that same check, so for example "Push dynamic
+    content" must follow "Request dynamic content" and "Show focus item" must
+    follow "Visits a page", each on the YES path.
+    """
+    restrictions = capabilities.get("connectionRestrictions") if isinstance(capabilities, dict) else None
+    if not isinstance(restrictions, dict):
+        return
+    labels = {_event_key(row): str(row.get("label") or _event_key(row)) for row in _event_capability_rows(capabilities)}
+    name = lambda key: f'"{labels.get(key, key)}"'  # noqa: E731
+    by_id = {str(event.get("id")): event for event in events if event.get("id") is not None}
+    anchors = restrictions.get("anchor") if isinstance(restrictions.get("anchor"), dict) else {}
+
+    for event in events:
+        key = str(event.get("type") or "")
+        group = str(event.get("eventType") or "")
+        rules = restrictions.get(key) if isinstance(restrictions.get(key), dict) else {}
+        sources = rules.get("source") if isinstance(rules.get("source"), dict) else {}
+        parent = by_id.get(str(event.get("parent") or ""))
+        if parent is None:
+            required = [item for items in sources.values() if isinstance(items, list) for item in items]
+            if required:
+                raise ValueError(f"{name(key)} cannot start the campaign: it must follow "
+                                 f"{' or '.join(name(item) for item in required)}.")
+            continue
+        parent_key = str(parent.get("type") or "")
+        parent_group = str(parent.get("eventType") or "")
+        allowed = sources.get(parent_group) if isinstance(sources.get(parent_group), list) else []
+        if allowed and parent_key not in allowed:
+            raise ValueError(f"{name(key)} can only follow {' or '.join(name(item) for item in allowed)}, "
+                             f"not {name(parent_key)}.")
+        parent_rules = restrictions.get(parent_key) if isinstance(restrictions.get(parent_key), dict) else {}
+        targets = (parent_rules.get("target") or {}).get(group) if isinstance(parent_rules.get("target"), dict) else None
+        if isinstance(targets, list) and targets and key not in targets:
+            raise ValueError(f"{name(key)} cannot follow {name(parent_key)}.")
+        forbidden = (anchors.get(parent_group) or {}).get(key) if isinstance(anchors.get(parent_group), dict) else None
+        path = str(event.get("decisionPath") or "")
+        if path and isinstance(forbidden, list) and any(_ANCHOR_PATHS.get(item, item) == path for item in forbidden):
+            raise ValueError(f'{name(key)} can only be on the YES path of {name(parent_key)}.')
+
+
 def _canvas_node(node_id: Any, column: int, depth: int) -> dict[str, Any]:
     return {
         "id": str(node_id),
@@ -1159,6 +1207,7 @@ def _parse_campaign_payload(
     # graph as well, so every request that carries events must carry a canvas.
     if "events" in payload:
         _validate_event_graph(payload["events"], payload.get("canvasSettings"))
+        _validate_connection_rules(payload["events"], capabilities)
         payload["canvasSettings"] = _build_campaign_canvas_settings(
             payload["events"],
             payload.get("canvasSettings"),
