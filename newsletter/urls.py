@@ -193,6 +193,13 @@ from .asset_views import (
     NewsletterAdminAssetListCreateView,
     NewsletterAdminAssetMetadataView,
 )
+from .focus_views import (
+    NewsletterAdminFocusDetailView,
+    NewsletterAdminFocusDuplicateView,
+    NewsletterAdminFocusInsightsView,
+    NewsletterAdminFocusListCreateView,
+    NewsletterAdminFocusPreviewView,
+)
 from .report_views import (
     NewsletterAdminReportDataView,
     NewsletterAdminReportDetailView,
@@ -805,6 +812,20 @@ urlpatterns = [
         name="newsletter-admin-asset-downloads",
     ),
     path("newsletter/admin/assets/<int:asset_id>/file/", NewsletterAdminAssetFileView.as_view(), name="newsletter-admin-asset-file"),
+    # Focus Items (Mautic website pop-ups and bars). "preview/" is static, ids numeric.
+    path("newsletter/admin/focus-items/", NewsletterAdminFocusListCreateView.as_view(), name="newsletter-admin-focus-list"),
+    path("newsletter/admin/focus-items/preview/", NewsletterAdminFocusPreviewView.as_view(), name="newsletter-admin-focus-preview"),
+    path("newsletter/admin/focus-items/<int:focus_id>/", NewsletterAdminFocusDetailView.as_view(), name="newsletter-admin-focus-detail"),
+    path(
+        "newsletter/admin/focus-items/<int:focus_id>/duplicate/",
+        NewsletterAdminFocusDuplicateView.as_view(),
+        name="newsletter-admin-focus-duplicate",
+    ),
+    path(
+        "newsletter/admin/focus-items/<int:focus_id>/insights/",
+        NewsletterAdminFocusInsightsView.as_view(),
+        name="newsletter-admin-focus-insights",
+    ),
     # Reports (Mautic report builder). Report ids are numeric, so the static
     # "sources/" and "exports/" segments never collide with them.
     path("newsletter/admin/reports/", NewsletterAdminReportListCreateView.as_view(), name="newsletter-admin-report-list"),

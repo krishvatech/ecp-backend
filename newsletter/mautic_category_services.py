@@ -23,6 +23,7 @@ BUNDLES = {
     "campaign": "Campaigns",
     "segment": "Segments",
     "asset": "Assets",
+    "plugin:focus": "Focus Items",
     "global": "Global (every type)",
 }
 TITLE_MAX = 191
