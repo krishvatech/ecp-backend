@@ -23,6 +23,8 @@ BUNDLES = {
     "campaign": "Campaigns",
     "segment": "Segments",
     "asset": "Assets",
+    "plugin:focus": "Focus Items",
+    "dynamicContent": "Dynamic Content",
     "global": "Global (every type)",
 }
 TITLE_MAX = 191

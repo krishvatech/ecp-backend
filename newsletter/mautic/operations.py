@@ -138,6 +138,17 @@ ASSET_DELETE = "asset.delete"
 CATEGORY_CREATE = "category.create"
 CATEGORY_UPDATE = "category.update"
 CATEGORY_DELETE = "category.delete"
+# Focus Items (EcpBridgeFocusApiController): no raw HTML, no script, and an
+# item still used by a campaign step or landing page is not deleted.
+FOCUS_CREATE = "focus.create"
+FOCUS_UPDATE = "focus.update"
+FOCUS_DELETE = "focus.delete"
+# Dynamic Content (EcpBridgeDynamicContentApiController): no script in the
+# content, only rules visitors can be checked against; an item used by a
+# campaign step is not deleted.
+DYNAMIC_CONTENT_CREATE = "dynamic_content.create"
+DYNAMIC_CONTENT_UPDATE = "dynamic_content.update"
+DYNAMIC_CONTENT_DELETE = "dynamic_content.delete"
 
 #: Every operation an assertion may be issued for. Anything else is refused at
 #: signing time rather than relying on the bridge to reject it.
@@ -243,5 +254,11 @@ ASSERTABLE_OPERATIONS = frozenset(
         CATEGORY_CREATE,
         CATEGORY_UPDATE,
         CATEGORY_DELETE,
+        FOCUS_CREATE,
+        FOCUS_UPDATE,
+        FOCUS_DELETE,
+        DYNAMIC_CONTENT_CREATE,
+        DYNAMIC_CONTENT_UPDATE,
+        DYNAMIC_CONTENT_DELETE,
     }
 )

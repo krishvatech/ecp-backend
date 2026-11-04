@@ -30,6 +30,12 @@ from .operations import (
     CATEGORY_CREATE,
     CATEGORY_DELETE,
     CATEGORY_UPDATE,
+    DYNAMIC_CONTENT_CREATE,
+    DYNAMIC_CONTENT_DELETE,
+    DYNAMIC_CONTENT_UPDATE,
+    FOCUS_CREATE,
+    FOCUS_DELETE,
+    FOCUS_UPDATE,
     REPORT_CREATE,
     REPORT_DELETE,
     REPORT_UPDATE,
@@ -3027,6 +3033,129 @@ class MauticClient:
         if not isinstance(asset, dict) or asset.get("id") is None:
             raise TemporaryMauticError(f"{context} returned an invalid response")
         return asset
+
+    # Focus Items ---------------------------------------------------------------
+    # Reads are the native list/detail plus the bridge's stats, insights and
+    # preview (service user). Writes are form-encoded to the bridge as the
+    # asserted user, which checks every field again before the native API.
+
+    def list_focus_items(self, **params) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "focus", params=params or None), "Mautic focus item list")
+        if not isinstance(data.get("focus"), (dict, list)):
+            raise TemporaryMauticError("Mautic focus item list returned an invalid response")
+        return data
+
+    def get_focus_item(self, focus_id) -> dict[str, Any]:
+        focus = self._numeric_id(focus_id, "focus item")
+        return self._focus_from(self._request("GET", f"focus/{focus}"), "Mautic focus item lookup")
+
+    def get_focus_stats(self, focus_ids) -> dict[int, dict[str, int]]:
+        """Views, unique views, clicks and submissions per Focus Item (at most 100 ids)."""
+        ids = [self._numeric_id(value, "focus item") for value in focus_ids][:100]
+        if not ids:
+            return {}
+        data = self._json_object(self._request("GET", "ecp/focus/stats", params={"ids": ",".join(ids)}), "Mautic focus stats")
+        stats = data.get("stats")
+        if not isinstance(stats, dict):
+            raise TemporaryMauticError("Mautic focus stats returned an invalid response")
+        return {int(key): value for key, value in stats.items() if str(key).isdigit() and isinstance(value, dict)}
+
+    def get_focus_insights(self, focus_id, *, days: int = 30) -> dict[str, Any]:
+        """Totals, a daily series and where the Focus Item is used (campaign steps, landing pages)."""
+        focus = self._numeric_id(focus_id, "focus item")
+        data = self._json_object(self._request("GET", f"ecp/focus/{focus}/insights", params={"days": days}), "Mautic focus insights")
+        if not isinstance(data.get("totals"), dict) or not isinstance(data.get("daily"), list) or not isinstance(data.get("usage"), dict):
+            raise TemporaryMauticError("Mautic focus insights returned an invalid response")
+        return data
+
+    def preview_focus_item(self, form: list[tuple[str, str]]) -> str:
+        """The Focus Item as Mautic renders it from unsaved settings (HTML, no script)."""
+        data = self._json_object(self._request("POST", "ecp/focus/preview", data=form), "Mautic focus preview")
+        if not isinstance(data.get("html"), str):
+            raise TemporaryMauticError("Mautic focus preview returned an invalid response")
+        return data["html"]
+
+    def _require_asserted_focus(self) -> None:
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic Focus Item changes require per-user Mautic identity")
+
+    def create_focus_item(self, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_focus()
+        response = self._bridge_request("POST", "ecp/bridge/focus/new", operation=FOCUS_CREATE, data=form)
+        return self._focus_from(response, "Mautic focus item creation")
+
+    def update_focus_item(self, focus_id, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_focus()
+        focus = self._numeric_id(focus_id, "focus item")
+        response = self._bridge_request("PATCH", f"ecp/bridge/focus/{focus}/edit", operation=FOCUS_UPDATE, data=form)
+        return self._focus_from(response, "Mautic focus item update")
+
+    def delete_focus_item(self, focus_id) -> None:
+        self._require_asserted_focus()
+        focus = self._numeric_id(focus_id, "focus item")
+        self._bridge_request("DELETE", f"ecp/bridge/focus/{focus}/delete", operation=FOCUS_DELETE)
+
+    def _focus_from(self, response, context: str) -> dict[str, Any]:
+        focus = self._json_object(response, context).get("focus")
+        if not isinstance(focus, dict) or focus.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return focus
+
+    # Dynamic Content -----------------------------------------------------------
+    # Reads are the bridge's list/detail/insights/slots (service user): the
+    # native API leaves out the published state. Writes are form-encoded to the
+    # bridge as the asserted user, which keeps the HTML content the native API
+    # would strip; rules travel as one JSON field so an empty list survives.
+
+    def list_dynamic_contents(self, **params) -> dict[str, Any]:
+        data = self._json_object(self._request("GET", "ecp/dynamic-content", params=params or None), "Mautic Dynamic Content list")
+        if not isinstance(data.get("dynamicContents"), list):
+            raise TemporaryMauticError("Mautic Dynamic Content list returned an invalid response")
+        return data
+
+    def get_dynamic_content(self, item_id) -> dict[str, Any]:
+        item = self._numeric_id(item_id, "Dynamic Content")
+        return self._dynamic_content_from(self._request("GET", f"ecp/dynamic-content/{item}"), "Mautic Dynamic Content lookup")
+
+    def get_dynamic_content_insights(self, item_id, *, days: int = 30) -> dict[str, Any]:
+        item = self._numeric_id(item_id, "Dynamic Content")
+        data = self._json_object(self._request("GET", f"ecp/dynamic-content/{item}/insights", params={"days": days}),
+                                 "Mautic Dynamic Content insights")
+        if not isinstance(data.get("totals"), dict) or not isinstance(data.get("daily"), list) or not isinstance(data.get("usage"), dict):
+            raise TemporaryMauticError("Mautic Dynamic Content insights returned an invalid response")
+        return data
+
+    def get_dynamic_content_slots(self) -> list[dict[str, Any]]:
+        data = self._json_object(self._request("GET", "ecp/dynamic-content/slots"), "Mautic Dynamic Content slots")
+        if not isinstance(data.get("slots"), list):
+            raise TemporaryMauticError("Mautic Dynamic Content slots returned an invalid response")
+        return data["slots"]
+
+    def _require_asserted_dynamic_content(self) -> None:
+        if not self._uses_asserted_user():
+            raise MauticIdentityConfigurationError("Mautic Dynamic Content changes require per-user Mautic identity")
+
+    def create_dynamic_content(self, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_dynamic_content()
+        response = self._bridge_request("POST", "ecp/bridge/dynamic-content/new", operation=DYNAMIC_CONTENT_CREATE, data=form)
+        return self._dynamic_content_from(response, "Mautic Dynamic Content creation")
+
+    def update_dynamic_content(self, item_id, form: list[tuple[str, str]]) -> dict[str, Any]:
+        self._require_asserted_dynamic_content()
+        item = self._numeric_id(item_id, "Dynamic Content")
+        response = self._bridge_request("PATCH", f"ecp/bridge/dynamic-content/{item}/edit", operation=DYNAMIC_CONTENT_UPDATE, data=form)
+        return self._dynamic_content_from(response, "Mautic Dynamic Content update")
+
+    def delete_dynamic_content(self, item_id) -> None:
+        self._require_asserted_dynamic_content()
+        item = self._numeric_id(item_id, "Dynamic Content")
+        self._bridge_request("DELETE", f"ecp/bridge/dynamic-content/{item}/delete", operation=DYNAMIC_CONTENT_DELETE)
+
+    def _dynamic_content_from(self, response, context: str) -> dict[str, Any]:
+        item = self._json_object(response, context).get("dynamicContent")
+        if not isinstance(item, dict) or item.get("id") is None:
+            raise TemporaryMauticError(f"{context} returned an invalid response")
+        return item
 
     # Reports -------------------------------------------------------------------
     # Reads are the bridge's metadata/definition/data endpoints (service user);

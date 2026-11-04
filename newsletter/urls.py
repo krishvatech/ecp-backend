@@ -193,6 +193,21 @@ from .asset_views import (
     NewsletterAdminAssetListCreateView,
     NewsletterAdminAssetMetadataView,
 )
+from .dynamic_content_views import (
+    NewsletterAdminDynamicContentDetailView,
+    NewsletterAdminDynamicContentDuplicateView,
+    NewsletterAdminDynamicContentInsightsView,
+    NewsletterAdminDynamicContentListCreateView,
+    NewsletterAdminDynamicContentRuleMetadataView,
+    NewsletterAdminDynamicContentSlotsView,
+)
+from .focus_views import (
+    NewsletterAdminFocusDetailView,
+    NewsletterAdminFocusDuplicateView,
+    NewsletterAdminFocusInsightsView,
+    NewsletterAdminFocusListCreateView,
+    NewsletterAdminFocusPreviewView,
+)
 from .report_views import (
     NewsletterAdminReportDataView,
     NewsletterAdminReportDetailView,
@@ -805,6 +820,43 @@ urlpatterns = [
         name="newsletter-admin-asset-downloads",
     ),
     path("newsletter/admin/assets/<int:asset_id>/file/", NewsletterAdminAssetFileView.as_view(), name="newsletter-admin-asset-file"),
+    # Focus Items (Mautic website pop-ups and bars). "preview/" is static, ids numeric.
+    path("newsletter/admin/focus-items/", NewsletterAdminFocusListCreateView.as_view(), name="newsletter-admin-focus-list"),
+    path("newsletter/admin/focus-items/preview/", NewsletterAdminFocusPreviewView.as_view(), name="newsletter-admin-focus-preview"),
+    path("newsletter/admin/focus-items/<int:focus_id>/", NewsletterAdminFocusDetailView.as_view(), name="newsletter-admin-focus-detail"),
+    path(
+        "newsletter/admin/focus-items/<int:focus_id>/duplicate/",
+        NewsletterAdminFocusDuplicateView.as_view(),
+        name="newsletter-admin-focus-duplicate",
+    ),
+    path(
+        "newsletter/admin/focus-items/<int:focus_id>/insights/",
+        NewsletterAdminFocusInsightsView.as_view(),
+        name="newsletter-admin-focus-insights",
+    ),
+    # Dynamic Content (Mautic page blocks per visitor). Static segments first, ids numeric.
+    path("newsletter/admin/dynamic-content/", NewsletterAdminDynamicContentListCreateView.as_view(), name="newsletter-admin-dynamic-content-list"),
+    path(
+        "newsletter/admin/dynamic-content/rule-metadata/",
+        NewsletterAdminDynamicContentRuleMetadataView.as_view(),
+        name="newsletter-admin-dynamic-content-rule-metadata",
+    ),
+    path("newsletter/admin/dynamic-content/slots/", NewsletterAdminDynamicContentSlotsView.as_view(), name="newsletter-admin-dynamic-content-slots"),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/",
+        NewsletterAdminDynamicContentDetailView.as_view(),
+        name="newsletter-admin-dynamic-content-detail",
+    ),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/duplicate/",
+        NewsletterAdminDynamicContentDuplicateView.as_view(),
+        name="newsletter-admin-dynamic-content-duplicate",
+    ),
+    path(
+        "newsletter/admin/dynamic-content/<int:item_id>/insights/",
+        NewsletterAdminDynamicContentInsightsView.as_view(),
+        name="newsletter-admin-dynamic-content-insights",
+    ),
     # Reports (Mautic report builder). Report ids are numeric, so the static
     # "sources/" and "exports/" segments never collide with them.
     path("newsletter/admin/reports/", NewsletterAdminReportListCreateView.as_view(), name="newsletter-admin-report-list"),
