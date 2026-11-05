@@ -4,13 +4,13 @@ friends/tasks.py
 Daily "Suggestion Digest" notification:
 - Connections: mutual friends >= 2
 - Groups: friends-in-group >= 2
-- Send at 9:00 AM Asia/Kolkata via Celery Beat
+- Send at 9:00 AM in each user's timezone via Celery Beat
 
 Creates ONE notification per user per day (skips if already created today).
 """
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
@@ -73,6 +73,9 @@ def count_connection_suggestions(me_id: int, mutual_threshold: int = 2) -> int:
         id__in=friend_ids
     ).exclude(
         id__in=pending_ids
+    ).exclude(
+        # Same rule as the suggestions page, so the count doesn't include people it hides.
+        profile__profile_status__in=("suspended", "fake", "deceased")
     ).distinct()
 
     qs = qs.annotate(
@@ -134,7 +137,7 @@ def _get_timezone_or_default(tz_name: str) -> Optional[ZoneInfo]:
 
 def _local_day_bounds_utc(local_date, tzinfo: ZoneInfo) -> tuple[datetime, datetime]:
     start_local = datetime.combine(local_date, time.min).replace(tzinfo=tzinfo)
-    start_utc = start_local.astimezone(timezone.utc)
+    start_utc = start_local.astimezone(dt_timezone.utc)
     end_utc = start_utc + timedelta(days=1)
     return start_utc, end_utc
 

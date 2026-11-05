@@ -992,14 +992,12 @@ CELERY_BEAT_SCHEDULE.update({
 })
 
 # OPTIMIZATION: Reduced frequency for 100+ concurrent user scalability
-# Disabled for now: send_suggestion_digest_for_timezone crashes on timezone.utc
-# (friends/tasks.py). Fix that before re-enabling this "Daily suggestions" schedule.
-# CELERY_BEAT_SCHEDULE.update({
-#     "dispatch_suggestion_digest_local_9am": {
-#         "task": "friends.tasks.dispatch_suggestion_digest_local_9am",
-#         "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
-#     }
-# })
+CELERY_BEAT_SCHEDULE.update({
+    "dispatch_suggestion_digest_local_9am": {
+        "task": "friends.tasks.dispatch_suggestion_digest_local_9am",
+        "schedule": crontab(minute="*/5"),  # Reduced from every 1 minute to every 5 minutes
+    }
+})
 
 CELERY_BEAT_SCHEDULE.update({
     "enforce_event_end_conditions": {
