@@ -1460,6 +1460,21 @@ def send_event_join_confirmation_email(user, event):
     )
 
 
+def _recipient_timezone(user, event):
+    """Timezone to show a recipient dates in: their own, else the event's, else the default."""
+    from zoneinfo import ZoneInfo
+    from django.utils import timezone as dj_timezone
+
+    profile = getattr(user, "profile", None)
+    for name in (getattr(profile, "timezone", ""), getattr(event, "timezone", "")):
+        if name:
+            try:
+                return ZoneInfo(name)
+            except (KeyError, ValueError, OSError):
+                continue
+    return dj_timezone.get_default_timezone()
+
+
 def send_replay_expiring_soon_email(user, event, expiration_date):
     """
     Send "Replay expires in 2 days" alert to registered users.
@@ -1491,14 +1506,19 @@ def send_replay_expiring_soon_email(user, event, expiration_date):
         "support_email": get_support_email(),
     }
 
-    return send_template_email(
-        template_key="replay_expiring_soon",
-        to_email=user.email,
-        context=ctx,
-        subject_override=f"Reminder: Replay for '{event.title}' expires soon",
-        fail_silently=True,
-        event=event,
-    )
+    # Templates format expiration_date in the active timezone. Use the recipient's own,
+    # otherwise everyone reads a server-time (IST) expiry as their local time.
+    from django.utils import timezone as dj_timezone
+
+    with dj_timezone.override(_recipient_timezone(user, event)):
+        return send_template_email(
+            template_key="replay_expiring_soon",
+            to_email=user.email,
+            context=ctx,
+            subject_override=f"Reminder: Replay for '{event.title}' expires soon",
+            fail_silently=True,
+            event=event,
+        )
 
 
 def send_welcome_email(user, login_url=None):

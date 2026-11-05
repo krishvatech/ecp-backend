@@ -7,9 +7,12 @@ from .models import Event, EventRegistration
 from events.services.live_instance_state import heartbeat_instance
 import requests
 import logging
+import re
 
 logger = logging.getLogger('events')
 IDLE_TIMEOUT_MINUTES = 15
+REPLAY_DURATION_RE = re.compile(r"^\s*(\d+)\s*(?:(day|month|year)s?)?\s*$", re.IGNORECASE)
+REPLAY_DURATION_UNIT_DAYS = {"day": 1, "month": 30, "year": 365}
 
 
 @shared_task(name="events.process_platform_sync_jobs")
@@ -1040,19 +1043,42 @@ def send_event_join_confirmation_task(self, event_id, user_id):
         return {"status": "error", "error": str(exc)}
 
 
-@shared_task(bind=True, max_retries=3)
+def get_replay_expiration(event):
+    """
+    Return when an event's replay expires, or None if it never does.
+
+    replay_availability_duration is free text: the event forms store "14 Days",
+    "6 Months", "1 Year" or "Unlimited", and the recording page stores a bare day
+    count such as "30". Keep in step with replayDurationToDays in the frontend.
+    """
+    match = REPLAY_DURATION_RE.match(event.replay_availability_duration or "")
+    ended_at = event.end_time or event.live_ended_at
+    if not match or not ended_at:
+        return None
+
+    days = int(match.group(1)) * REPLAY_DURATION_UNIT_DAYS[(match.group(2) or "day").lower()]
+    if days <= 0:
+        return None
+
+    try:
+        return ended_at + timedelta(days=days)
+    except OverflowError:
+        return None
+
+
+@shared_task(bind=True)
 def send_replay_expiring_soon_task(self, event_id):
     """
-    Celery task: Send "Replay expires in 2 days" alerts to all registered users.
+    Celery task: Send "Replay expires soon" alerts to all registered users.
 
-    Scheduled to run 2 days before replay expiration (when replay_availability_duration allows).
-    Idempotent: checks replay_expiring_notifications_sent_at before sending.
+    Run by scheduled_send_replay_expiring_alerts once a replay is within 2 days of expiring.
+    Idempotent: claims replay_expiring_notifications_sent_at before sending.
 
     Args:
         event_id: ID of the event
 
     Returns:
-        dict: {"status": "ok", "emails_sent": int} or {"status": "error", "error": str}
+        dict: {"status": "ok", "emails_sent": int} or {"skipped": True, "reason": str}
     """
     from .models import Event, EventRegistration
     from users.email_utils import send_replay_expiring_soon_email
@@ -1069,43 +1095,44 @@ def send_replay_expiring_soon_task(self, event_id):
         return {"skipped": True, "reason": "already_sent"}
 
     # Check if replay is available and has expiration info
-    if not event.replay_available or not event.replay_availability_duration:
+    expiration_date = get_replay_expiration(event)
+    if not event.replay_available or expiration_date is None:
         logger.warning(f"[REPLAY_EXPIRING] Event {event_id}: replay not available or no expiration info")
         return {"skipped": True, "reason": "no_replay_expiration"}
 
     # Get all registered users
-    registrations = EventRegistration.objects.filter(
+    registrations = list(EventRegistration.objects.filter(
         event=event,
         status__in=["registered", "cancellation_requested"]
-    ).select_related("user")
+    ).select_related("user", "user__profile"))
+
+    # Claim the event before the first email. A large send can outlast the 5-minute
+    # schedule or be killed part way, and sent emails can't be rolled back: marking it
+    # afterwards would email the same people again on every run. If a send is killed
+    # the remaining recipients miss this reminder, which is better than repeat emails.
+    claimed = Event.objects.filter(
+        pk=event_id,
+        replay_expiring_notifications_sent_at__isnull=True,
+    ).update(replay_expiring_notifications_sent_at=timezone.now())
+    if not claimed:
+        logger.info(f"[REPLAY_EXPIRING] Skipping event {event_id}: claimed by another run")
+        return {"skipped": True, "reason": "already_sent"}
 
     emails_sent = 0
-    expiration_date = timezone.now() + timedelta(days=2)
 
-    try:
-        with transaction.atomic():
-            for reg in registrations:
-                user = reg.user
-                if not user or not user.email:
-                    continue
+    for reg in registrations:
+        user = reg.user
+        if not user or not user.email:
+            continue
 
-                if send_replay_expiring_soon_email(user, event, expiration_date):
-                    emails_sent += 1
-                    logger.info(f"[REPLAY_EXPIRING] Sent alert to {user.email} for event {event.id}")
-                else:
-                    logger.warning(f"[REPLAY_EXPIRING] Failed to send email to {user.email}")
+        if send_replay_expiring_soon_email(user, event, expiration_date):
+            emails_sent += 1
+            logger.info(f"[REPLAY_EXPIRING] Sent alert to {user.email} for event {event.id}")
+        else:
+            logger.warning(f"[REPLAY_EXPIRING] Failed to send email to {user.email}")
 
-            # Mark notifications as sent (prevents duplicate sends)
-            Event.objects.filter(pk=event_id).update(
-                replay_expiring_notifications_sent_at=timezone.now()
-            )
-
-        logger.info(f"[REPLAY_EXPIRING] Event {event_id}: sent {emails_sent} expiration alerts")
-        return {"status": "ok", "emails_sent": emails_sent}
-
-    except Exception as exc:
-        logger.exception(f"[REPLAY_EXPIRING] Task failed for event {event_id}: {exc}")
-        raise self.retry(exc=exc, countdown=60)
+    logger.info(f"[REPLAY_EXPIRING] Event {event_id}: sent {emails_sent} expiration alerts")
+    return {"status": "ok", "emails_sent": emails_sent}
 
 
 @shared_task(bind=True)
@@ -1154,14 +1181,16 @@ def scheduled_send_event_starting_soon_reminders(self):
     return {"status": "ok", "events_processed": events_processed, "total_emails": total_emails_sent}
 
 
-@shared_task(bind=True)
+# Each email opens its own SMTP connection, so a large event can far outlast the default
+# 5-minute task limit. The send runs inline below, so the limit has to be raised here.
+@shared_task(bind=True, soft_time_limit=55 * 60, time_limit=60 * 60)
 def scheduled_send_replay_expiring_alerts(self):
     """
     Scheduled task: Find all events with replays expiring within 2 days and send alerts.
 
     Runs every 5 minutes via Celery Beat.
     Finds events that:
-    - Have replay_available = True
+    - Have a recording participants can watch (same rule as "available" on My Recordings)
     - Replay expires within 2 days from now
     - Haven't had expiration alerts sent yet (replay_expiring_notifications_sent_at is None)
 
@@ -1173,35 +1202,39 @@ def scheduled_send_replay_expiring_alerts(self):
     now = timezone.now()
     two_days_later = now + timedelta(days=2)
 
-    # Find events with replays expiring within 2 days that haven't sent alerts yet
+    # Find events with replays expiring within 2 days that haven't sent alerts yet.
+    # Events that never ran live stay "published" after they end, so both statuses count.
     events_with_expiring_replays = Event.objects.filter(
         replay_available=True,
+        replay_visible_to_participants=True,
         replay_availability_duration__isnull=False,
         replay_expiring_notifications_sent_at__isnull=True,
-        status='published'
-    )
+        status__in=['published', 'ended']
+    ).exclude(recording_url='')
 
     events_processed = 0
     total_emails_sent = 0
 
     for event in events_with_expiring_replays:
-        # Calculate replay expiration date
-        if event.end_time and event.replay_availability_duration:
-            replay_expiration = event.end_time + event.replay_availability_duration
-
+        try:
             # Check if replay expires within 2 days
-            if now <= replay_expiration <= two_days_later:
-                try:
-                    result = send_replay_expiring_soon_task.apply(args=[event.id])
-                    if result.successful():
-                        data = result.get()
-                        if data and data.get('status') == 'ok':
-                            emails_sent = data.get('emails_sent', 0)
-                            total_emails_sent += emails_sent
-                            events_processed += 1
-                            logger.info(f"[SCHEDULER] Processed replay expiration for event {event.id} ({event.title}): {emails_sent} emails")
-                except Exception as e:
-                    logger.error(f"[SCHEDULER] Failed to process replay expiration for event {event.id}: {e}")
+            replay_expiration = get_replay_expiration(event)
+            if replay_expiration is None or not now <= replay_expiration <= two_days_later:
+                continue
+
+            result = send_replay_expiring_soon_task.apply(args=[event.id])
+            if result.successful():
+                data = result.get()
+                if data and data.get('status') == 'ok':
+                    emails_sent = data.get('emails_sent', 0)
+                    total_emails_sent += emails_sent
+                    events_processed += 1
+                    logger.info(f"[SCHEDULER] Processed replay expiration for event {event.id} ({event.title}): {emails_sent} emails")
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Failed to process replay expiration for event {event.id}: {e}")
+
+    logger.info(f"[SCHEDULER] Scheduled replay expiring task complete: {events_processed} events, {total_emails_sent} emails sent")
+    return {"status": "ok", "events_processed": events_processed, "total_emails": total_emails_sent}
 
 
 # ============================================================================
