@@ -7,6 +7,7 @@ from urllib.request import urlopen
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 from django.db import transaction
@@ -27,6 +28,8 @@ User = get_user_model()
 _JWKS_CACHE = {"keys": None, "fetched_at": 0}
 _JWKS_TTL = 60 * 60  # 1 hour
 _FEDERATED_PASSWORD_SYNCED_SUBS = set()
+_LAST_LOGIN_WRITE_INTERVAL_SECONDS = 5 * 60
+_SALEOR_SYNC_RETRY_SECONDS = 5 * 60
 
 def _unique_username(base: str):
     base = (base or "user").strip().lower()
@@ -752,16 +755,31 @@ class CognitoJWTAuthentication(BaseAuthentication):
                     profile.save(update_fields=list(dict.fromkeys(profile_update_fields)))
 
             # --- Update last_login on successful authentication ---
-            user.last_login = timezone.now()
-            user.save(update_fields=["last_login"])
+            # This runs on every API request, and each save resets the user's
+            # cached /users/me response, so only write it once per interval.
+            now = timezone.now()
+            if (
+                not user.last_login
+                or (now - user.last_login).total_seconds() > _LAST_LOGIN_WRITE_INTERVAL_SECONDS
+            ):
+                user.last_login = now
+                user.save(update_fields=["last_login"])
             # ---------------------------------------------------
 
             # --- ECP <-> Saleor Sync (Async Background Task) ---
-            from .tasks import sync_user_to_saleor_async
-            try:
-                sync_user_to_saleor_async.delay(user.id)
-            except Exception as e:
-                logger.warning(f"Failed to queue Saleor sync task: {e}")
+            # The task only links the user to a Saleor customer and stops once
+            # saleor_customer_id is set, so linked users have nothing to queue.
+            # The cache lock spaces out retries while the link keeps failing.
+            if (
+                getattr(settings, "SALEOR_ENABLED", False)
+                and not getattr(profile, "saleor_customer_id", None)
+            ):
+                from .tasks import sync_user_to_saleor_async
+                try:
+                    if cache.add(f"user:{user.id}:saleor-sync-queued", 1, _SALEOR_SYNC_RETRY_SECONDS):
+                        sync_user_to_saleor_async.delay(user.id)
+                except Exception as e:
+                    logger.warning(f"Failed to queue Saleor sync task: {e}")
             # -------------------------------------------------------
 
             return (user, token)
