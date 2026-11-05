@@ -6,6 +6,7 @@ from .email_design_services import (
     html_fingerprint,
     prepare_email_design,
 )
+from .mautic.payloads import campaign_segments
 from .models import NewsletterAudience, NewsletterCampaign, NewsletterCategory
 
 
@@ -64,6 +65,14 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
         required=False,
         allow_empty=True,
     )
+    segment_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+        max_length=50,
+    )
+    segments = serializers.SerializerMethodField()
     # Visual builder: the design is stored by ECP only, and html_content is
     # compiled here from the submitted MJML (never taken from the client).
     design = serializers.JSONField(write_only=True, required=False)
@@ -84,6 +93,8 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
             "status",
             "audiences",
             "audience_slugs",
+            "segments",
+            "segment_ids",
             "design",
             "mjml",
             "visual_design",
@@ -111,6 +122,9 @@ class NewsletterCampaignSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_segments(self, campaign):
+        return [{"id": str(row["id"]), "name": row["name"]} for row in campaign_segments(campaign)]
 
     def validate_audience_slugs(self, value):
         slugs = list(dict.fromkeys(value))

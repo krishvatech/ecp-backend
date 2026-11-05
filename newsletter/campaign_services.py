@@ -133,10 +133,14 @@ def validate_campaign_delivery_readiness(campaign):
             "Campaign content is required before delivery."
         )
 
+    # Chosen segments are checked against Mautic when the broadcast syncs.
+    if campaign.mautic_segments:
+        return []
+
     audiences = list(campaign.audiences.all().order_by("slug", "id"))
     if not audiences:
         raise CampaignMauticValidationError(
-            "At least one newsletter audience is required before delivery."
+            "At least one segment is required before delivery."
         )
 
     for category in audiences:
@@ -176,14 +180,70 @@ def _record_mautic_sync_error(campaign, error):
     campaign.save(update_fields=["last_error", "updated_at"])
 
 
-def _repair_audience_segments(campaign, service_client):
-    """Heal definitively-missing audience segment mappings before a sync.
+def _check_chosen_segments(campaign, client):
+    """Refuse a chosen segment Mautic would not accept, and refresh the names.
 
-    ``service_client`` is always a service-account client, never the caller's
-    asserted-user client: recreating a Mautic segment is system work and must
-    not be attributed to the human saving the broadcast.
+    Mautic's email form silently drops or refuses a segment that is unpublished
+    or gone, so the broadcast would go to fewer people, or to nobody, without
+    anyone being told.
+    """
+    rows = campaign.mautic_segments or []
+    if not rows:
+        return
+
+    current = []
+    for row in rows:
+        label = row.get("name") or f"#{row.get('id')}"
+        try:
+            segment = client.get_segment(row.get("id"))
+        except PermanentMauticError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            raise CampaignMauticValidationError(
+                f"Segment '{label}' no longer exists in Mautic. Choose another segment."
+            ) from exc
+        name = segment.get("name") or row.get("name") or ""
+        if segment.get("isPublished") in (False, 0, "0"):
+            raise CampaignMauticValidationError(
+                f"Segment '{name or label}' is unpublished in Mautic. Publish it or choose another segment."
+            )
+        current.append({"id": row.get("id"), "name": name})
+
+    if current != rows:
+        campaign.mautic_segments = current
+        NewsletterCampaign.objects.filter(pk=campaign.pk).update(mautic_segments=current)
+
+
+def _check_chosen_segments_before_delivery(campaign):
+    """Refuse a send or schedule now, while the draft can still be corrected.
+
+    Once a send event exists the broadcast can no longer be edited, so a segment
+    removed since the last save must be caught before that point.
+    """
+    if not campaign.mautic_segments:
+        return
+    try:
+        _check_chosen_segments(campaign, MauticClient())
+    except TemporaryMauticError as exc:
+        raise CampaignMauticUnavailable(
+            "Mautic newsletter synchronization is temporarily unavailable."
+        ) from exc
+    except PermanentMauticError as exc:
+        raise CampaignMauticSyncFailed(
+            "Mautic could not confirm this broadcast's segments."
+        ) from exc
+
+
+def _repair_audience_segments(campaign, service_client):
+    """Check the broadcast's segments before a sync, healing Subscription Lists.
+
+    Chosen segments are only checked. A Subscription List's definitively-missing
+    segment mapping is repaired. ``service_client`` is always a service-account
+    client, never the caller's asserted-user client: recreating a Mautic segment
+    is system work and must not be attributed to the human saving the broadcast.
     """
     try:
+        _check_chosen_segments(campaign, service_client)
         return repair_campaign_audience_segments(campaign, client=service_client)
     except TemporaryMauticError as exc:
         _record_mautic_sync_error(campaign, exc)
@@ -522,10 +582,20 @@ def deliver_temporary_test_email(payload, recipient, *, provider_client, send_cl
     }
 
 
+def _chosen_segment_rows(segment_ids, previous=()):
+    """{"id", "name"} rows for the chosen ids: the names come from Mautic on sync."""
+    names = {row.get("id"): row.get("name") or "" for row in previous}
+    return [{"id": segment_id, "name": names.get(segment_id, "")} for segment_id in dict.fromkeys(segment_ids)]
+
+
 @transaction.atomic
 def create_campaign(validated_data, *, user):
     audience_slugs = validated_data.pop("audience_slugs", [])
+    segment_ids = validated_data.pop("segment_ids", None)
     email_design = validated_data.pop("email_design", None)
+    if segment_ids is not None:
+        audience_slugs = []
+        validated_data["mautic_segments"] = _chosen_segment_rows(segment_ids)
     campaign = NewsletterCampaign.objects.create(
         **validated_data,
         status=NewsletterCampaign.Status.DRAFT,
@@ -565,6 +635,7 @@ def duplicate_campaign(source, *, user):
     duplicate = NewsletterCampaign.objects.create(
         name=f"{base_name}{DUPLICATE_NAME_SUFFIX}",
         **{field: getattr(source, field) for field in DUPLICATE_CONTENT_FIELDS},
+        mautic_segments=list(source.mautic_segments or []),
         status=NewsletterCampaign.Status.DRAFT,
         created_by=user,
         updated_by=user,
@@ -595,9 +666,17 @@ def update_campaign(campaign, validated_data, *, user):
     _ensure_campaign_can_change(campaign, action="edited")
 
     audience_slugs = validated_data.pop("audience_slugs", None)
+    segment_ids = validated_data.pop("segment_ids", None)
     email_design = validated_data.pop("email_design", None)
     for field, value in validated_data.items():
         setattr(campaign, field, value)
+    # Whichever audience was sent last replaces the other, so a saved broadcast
+    # never has two.
+    if segment_ids is not None:
+        campaign.mautic_segments = _chosen_segment_rows(segment_ids, campaign.mautic_segments or [])
+        audience_slugs = []
+    elif audience_slugs is not None:
+        campaign.mautic_segments = []
     campaign.updated_by = user
     campaign.save()
 
@@ -1040,6 +1119,7 @@ def schedule_campaign(campaign, *, scheduled_at, user):
         )
 
     validate_campaign_delivery_readiness(campaign)
+    _check_chosen_segments_before_delivery(campaign)
     campaign.status = NewsletterCampaign.Status.SCHEDULED
     campaign.scheduled_at = scheduled_at
     # Stamped explicitly so the ECP dispatcher keeps selecting it even after
@@ -1161,6 +1241,7 @@ def request_campaign_send(campaign, *, user):
 
         if event is None:
             validate_campaign_for_mautic_sync(campaign)
+            _check_chosen_segments_before_delivery(campaign)
             event = create_campaign_send_event(
                 campaign,
                 requested_by=user,

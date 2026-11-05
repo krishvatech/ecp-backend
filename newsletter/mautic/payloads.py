@@ -12,6 +12,25 @@ def _mautic_segment_id(value: object) -> int | str:
     return normalized
 
 
+def campaign_segments(campaign) -> list[dict[str, Any]]:
+    """The Mautic segments a broadcast goes to, as {"id", "name"} rows.
+
+    Its chosen segments; a broadcast saved before segments could be chosen still
+    goes to the segments of its Subscription Lists.
+    """
+    chosen = campaign.mautic_segments or []
+    if chosen:
+        return [
+            {"id": _mautic_segment_id(row.get("id")), "name": row.get("name") or ""}
+            for row in chosen
+        ]
+    categories = sorted(campaign.audiences.all(), key=lambda category: (category.slug, category.pk))
+    return [
+        {"id": _mautic_segment_id(category.mautic_segment_id), "name": category.name}
+        for category in categories
+    ]
+
+
 def build_campaign_email_payload(
     campaign,
     *,
@@ -19,10 +38,7 @@ def build_campaign_email_payload(
 ) -> dict[str, Any]:
     """Build the Mautic list-email payload for an ECP newsletter campaign."""
 
-    segment_ids = [
-        _mautic_segment_id(category.mautic_segment_id)
-        for category in campaign.audiences.all().order_by("slug", "id")
-    ]
+    segment_ids = [row["id"] for row in campaign_segments(campaign)]
 
     return {
         "name": campaign.name,

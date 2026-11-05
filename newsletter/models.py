@@ -282,6 +282,10 @@ class NewsletterCampaign(models.Model):
         blank=True,
         related_name="campaigns",
     )
+    # The Mautic segments this broadcast goes to, as {"id", "name"} rows; each
+    # name is refreshed from Mautic on sync. Empty on a broadcast saved before
+    # segments could be chosen, which still goes to its ``audiences``.
+    mautic_segments = models.JSONField(blank=True, default=list)
     scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True)
     schedule_owner = models.CharField(
         max_length=16,

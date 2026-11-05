@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 
 from .marketing_permissions import HasMarketingHubAccess
 from .mautic import MauticClient, PermanentMauticError, TemporaryMauticError
+from .mautic.payloads import campaign_segments
 from .models import NewsletterCampaign
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ def broadcast_items(start: date, end: date) -> list[dict]:
             "title": row.name,
             "subtitle": row.subject,
             "resourceId": str(row.uuid),
-            "lists": [audience.name for audience in row.audiences.all()],
+            "lists": [segment["name"] for segment in campaign_segments(row) if segment["name"]],
         })
     return items
 

@@ -275,6 +275,8 @@ class NewsletterAdminCampaignAPITests(TestCase):
                 "plain_text",
                 "status",
                 "audiences",
+                # The Mautic segments the broadcast goes to.
+                "segments",
                 "scheduled_at",
                 # Read-only diagnostic added with native scheduling: says which
                 # scheduler delivers this broadcast.
