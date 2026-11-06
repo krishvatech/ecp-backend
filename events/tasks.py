@@ -1526,12 +1526,37 @@ def send_networking_meeting_cancelled_email(meeting_id):
         return False
 
 
+# Lets a reminder go out slightly early, for small clock differences between servers.
+NETWORKING_REMINDER_EARLY_TOLERANCE_SECONDS = 30
+
+
+def _networking_reminder_minutes_left(start_time, reminder_minutes_before, now):
+    """
+    Whole minutes until the meeting if a reminder is due now, otherwise None.
+    A reminder is due from the event's reminder time until the meeting starts,
+    so a meeting accepted late still gets one. A setting of 0 means one minute before.
+    """
+    seconds_left = (start_time - now).total_seconds()
+    due_from = max(reminder_minutes_before, 1) * 60 + NETWORKING_REMINDER_EARLY_TOLERANCE_SECONDS
+    if seconds_left <= 0 or seconds_left > due_from:
+        return None
+    return max(round(seconds_left / 60), 1)
+
+
+def _networking_reminder_claim(start_time):
+    """
+    Stored on the meeting once its reminder is sent for this start time.
+    A reschedule changes the start time, so the new time gets its own reminder.
+    """
+    return f"sent:{int(start_time.timestamp())}"
+
+
 @shared_task
 def send_networking_meeting_reminder_email(meeting_id):
     """
-    Send reminder email X minutes before meeting starts.
-    Called by scheduled task that runs every minute.
-    Re-checks meeting status before sending - if not ACCEPTED, does not send.
+    Send one reminder email to each person before a meeting starts.
+    Called by the scheduled task that runs every minute. Re-checks the meeting
+    first, so a task that is late, repeated or out of date sends nothing.
     """
     from events.models import NetworkingMeeting
     from users.email_utils import send_template_email, get_support_email
@@ -1557,7 +1582,11 @@ def send_networking_meeting_reminder_email(meeting_id):
 
         companion_url = build_networking_meeting_url(meeting)
 
-        reminder_minutes = event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15
+        reminder_minutes_before = event.networking_settings.reminder_minutes_before if hasattr(event, 'networking_settings') else 15
+        reminder_minutes = _networking_reminder_minutes_left(meeting.start_time, reminder_minutes_before, timezone.now())
+        if reminder_minutes is None:
+            logger.info(f"Skipping reminder for meeting {meeting_id}: it is not reminder time")
+            return False
 
         base_ctx = {
             "app_name": "IMAA Connect",
@@ -1572,6 +1601,20 @@ def send_networking_meeting_reminder_email(meeting_id):
             "event_url": companion_url,  # For backwards compatibility
             "support_email": get_support_email(),
         }
+
+        # Only one task can claim this reminder, so repeated tasks can't send it twice.
+        # Claiming before sending means a failed send isn't retried: a missed
+        # reminder is better than several. update() also keeps updated_at, which
+        # drives the unread badge in My Meetings.
+        claim = _networking_reminder_claim(meeting.start_time)
+        claimed = (
+            NetworkingMeeting.objects.filter(id=meeting_id, status='accepted', start_time=meeting.start_time)
+            .exclude(reminder_task_id=claim)
+            .update(reminder_task_id=claim)
+        )
+        if not claimed:
+            logger.info(f"Skipping reminder for meeting {meeting_id}: already sent for this start time")
+            return False
 
         # Send to requester
         ctx_requester = {**base_ctx, "first_name": requester.user.first_name or requester.user.username or "there", "other_party_name": recipient.user.get_full_name() or recipient.user.username}
@@ -1605,33 +1648,32 @@ def send_networking_meeting_reminder_email(meeting_id):
 def schedule_networking_meeting_reminders():
     """
     Scheduled task that runs every minute to find meetings starting soon.
-    Sends reminder emails X minutes before meeting start time.
+    Queues a reminder for each meeting that is due one and hasn't had it yet.
     """
     from events.models import NetworkingMeeting
-    from datetime import datetime
-    from django.utils import timezone
 
     try:
         now = timezone.now()
         reminders_sent = 0
 
-        # Get all ACCEPTED meetings
-        meetings = NetworkingMeeting.objects.filter(status='accepted')
+        # One query: only upcoming meetings, and only the values needed here.
+        meetings = NetworkingMeeting.objects.filter(
+            status='accepted',
+            start_time__gt=now,
+            event__networking_settings__isnull=False,
+        ).values('id', 'start_time', 'reminder_task_id', 'event__networking_settings__reminder_minutes_before')
 
         for meeting in meetings:
-            if not meeting.event or not hasattr(meeting.event, 'networking_settings'):
+            if meeting['reminder_task_id'] == _networking_reminder_claim(meeting['start_time']):
                 continue
 
-            settings = meeting.event.networking_settings
-            reminder_minutes = settings.reminder_minutes_before
-
-            # Calculate the time window for sending reminders
-            # Send reminder when: start_time - now == reminder_minutes (within 1-2 minute tolerance)
-            time_until_meeting = (meeting.start_time - now).total_seconds() / 60
-
-            # Check if we're in the reminder window (within 2 minutes of target time)
-            if reminder_minutes - 2 <= time_until_meeting <= reminder_minutes + 1:
-                send_networking_meeting_reminder_email.delay(meeting.id)
+            minutes_left = _networking_reminder_minutes_left(
+                meeting['start_time'],
+                meeting['event__networking_settings__reminder_minutes_before'],
+                now,
+            )
+            if minutes_left is not None:
+                send_networking_meeting_reminder_email.delay(meeting['id'])
                 reminders_sent += 1
 
         logger.info(f"Scheduled networking meeting reminders: {reminders_sent} reminders queued")

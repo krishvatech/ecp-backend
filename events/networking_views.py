@@ -42,7 +42,6 @@ from events.tasks import (
     send_networking_meeting_declined_email,
     send_networking_meeting_suggested_email,
     send_networking_meeting_cancelled_email,
-    send_networking_meeting_reminder_email,
 )
 
 
@@ -635,14 +634,6 @@ class NetworkingMeetingAcceptView(views.APIView):
 
                 # Send accepted email to both parties
                 send_networking_meeting_accepted_email.delay(meeting.id)
-
-                # Schedule reminder email 5 minutes before meeting
-                meeting_reminder_time = meeting.start_time - timedelta(minutes=5)
-                if meeting_reminder_time > timezone.now():
-                    send_networking_meeting_reminder_email.apply_async(
-                        args=[meeting.id],
-                        eta=meeting_reminder_time
-                    )
 
             transaction.on_commit(on_accept_success)
 

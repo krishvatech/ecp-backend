@@ -5051,6 +5051,8 @@ class NetworkingMeeting(models.Model):
     accepted_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was accepted")
     declined_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was declined")
     cancelled_at = models.DateTimeField(null=True, blank=True, help_text="When the meeting was cancelled")
+    # No longer a Celery task ID: holds "sent:<start timestamp>" once the reminder for
+    # that start time has gone out. See send_networking_meeting_reminder_email.
     reminder_task_id = models.CharField(
         max_length=255,
         blank=True,
