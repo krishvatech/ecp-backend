@@ -1036,6 +1036,22 @@ def _last_name_sort_key(display_name, first_name="", last_name=""):
     return (fold(last_name), fold(first_name), fold(display_name))
 
 
+def _latest_experience_by_user(user_ids):
+    """
+    Most recent Experience for each user, as {user_id: {"position", "community_name"}}.
+    Current roles come first, then the latest end date, start date and id.
+    """
+    from users.models import Experience
+
+    return {
+        experience["user_id"]: experience
+        for experience in Experience.objects.filter(user_id__in=user_ids)
+        .order_by("user_id", "-currently_work_here", "-end_date", "-start_date", "-id")
+        .distinct("user_id")
+        .values("user_id", "position", "community_name")
+    }
+
+
 def _is_event_host(user, event) -> bool:
     """
     Strict role check: is this user a Host for the live room?
@@ -8410,7 +8426,7 @@ class EventViewSet(viewsets.ModelViewSet):
         - count: total participants
         """
         from events.services.participant_roster import (
-            public_participant_count, public_directory_extra_rows,
+            extra_participant_rows, public_participant_count, public_directory_extra_rows,
         )
         event = self.get_object()
         user = request.user
@@ -8447,32 +8463,58 @@ class EventViewSet(viewsets.ModelViewSet):
             .filter(Q(hide_from_companion=False) | Q(user=user))
             .exclude(user__is_superuser=True)
             .select_related("user", "user__profile")
+            # An event can have hundreds of registrations, and user and profile rows
+            # are wide, so load only the columns this view reads.
+            .only(
+                "id", "event_id", "user_id", "registered_at", "hide_from_companion",
+                "user__id", "user__username", "user__email", "user__first_name", "user__last_name",
+                "user__is_superuser",
+                "user__profile__id", "user__profile__user", "user__profile__full_name",
+                "user__profile__job_title", "user__profile__company", "user__profile__user_image",
+            )
             .prefetch_related("badge_labels")
             .order_by("-registered_at")
         )
+        registrations = list(qs)
 
+        # Load speakers and their users together, so resolving roles below doesn't
+        # run one query per speaker. The role lookups reuse this list.
+        event._event_participants_cache = list(
+            event.participants.select_related("user", "virtual_speaker", "virtual_speaker__converted_user")
+        )
         participant_lookup = build_event_participant_lookup(event)
+
+        # A profile with no job title or company falls back to the latest experience.
+        latest_experience = _latest_experience_by_user([
+            registration.user_id
+            for registration in registrations
+            if not (
+                (profile := getattr(registration.user, "profile", None))
+                and profile.job_title
+                and profile.company
+            )
+        ])
+
+        # Build one serializer: creating one per row is slow, and only these two fields are read.
+        mini_user_serializer = UserMiniSerializer(context={"request": request})
+
         rows = []
         # participant_key -> (first_name, last_name) stored on the user account
         stored_names = {}
 
         # Process registered users as participants
-        for registration in qs:
+        for registration in registrations:
             _matched_participants, roles, primary_role = resolve_registration_roles(
                 registration,
                 participant_lookup,
                 event=event,
             )
 
-            try:
-                profile = registration.user.profile
-            except Exception:
-                profile = None
+            profile = getattr(registration.user, "profile", None)
 
-            mini_user = UserMiniSerializer(registration.user, context={"request": request}).data
-            avatar_url = mini_user.get("avatar_url") or ""
+            avatar_url = mini_user_serializer.get_avatar_url(registration.user) or ""
 
-            display_name = mini_user.get("full_name") or registration.user.get_full_name().strip() or registration.user.username or registration.user.email or "Unknown User"
+            display_name = mini_user_serializer.get_full_name(registration.user) or registration.user.get_full_name().strip() or registration.user.username or registration.user.email or "Unknown User"
 
             # Get job_title and company from profile or latest experience
             job_title = ""
@@ -8481,23 +8523,14 @@ class EventViewSet(viewsets.ModelViewSet):
                 job_title = profile.job_title or ""
                 company = profile.company or ""
 
-            # If not in profile, try to get from latest experience
+            # If not in profile, get from latest experience
             if not job_title or not company:
-                try:
-                    from users.models import Experience
-                    latest_exp = Experience.objects.filter(
-                        user=registration.user
-                    ).order_by(
-                        '-currently_work_here', '-end_date', '-start_date', '-id'
-                    ).first()
-
-                    if latest_exp:
-                        if not job_title:
-                            job_title = latest_exp.position or ""
-                        if not company:
-                            company = latest_exp.community_name or ""
-                except Exception:
-                    pass
+                latest_exp = latest_experience.get(registration.user_id)
+                if latest_exp:
+                    if not job_title:
+                        job_title = latest_exp["position"] or ""
+                    if not company:
+                        company = latest_exp["community_name"] or ""
 
             # Badge logic: use primary role if speaker/moderator/host, else "attendee"
             badge_key = primary_role.lower() if primary_role in ['speaker', 'moderator', 'host'] else 'attendee'
@@ -8562,7 +8595,8 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Accepted applications with no registration are visible for context,
         # but are never networking targets (no user_id or registration_id).
-        for row in public_directory_extra_rows(event, companion=True):
+        extra_rows = extra_participant_rows(event)
+        for row in public_directory_extra_rows(event, companion=True, candidates=extra_rows):
             rows.append(row)
 
         # Apply search filter
@@ -8614,7 +8648,7 @@ class EventViewSet(viewsets.ModelViewSet):
             },
             "count": len(rows),
             "networking_profile_count": sum(1 for row in rows if row.get("registration_id") and row.get("user_id")),
-            "public_participant_count": public_participant_count(event),
+            "public_participant_count": public_participant_count(event, extra_rows=extra_rows),
             "filters": filters,
             "participants": rows,
         })
