@@ -429,7 +429,9 @@ def compute_public_registered_count(event, registrations_qs=None):
                 EventRegistration.objects
                 .filter(event=event, status='registered')
                 .exclude(user__is_superuser=True)
-                .select_related("user", "user__profile")
+                .select_related("user")
+                # The role lookup below only reads the user id and email.
+                .only("id", "user_id", "user__id", "user__email")
             )
 
     participant_lookup = build_event_participant_lookup(event)

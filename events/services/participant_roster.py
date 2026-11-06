@@ -48,10 +48,10 @@ def extra_participant_rows(event, *, include_superusers=False):
         return []
 
     registrations = list(
-        EventRegistration.objects.filter(event=event).select_related("user")
+        EventRegistration.objects.filter(event=event).values_list("user_id", "user__email")
     )
-    reserved_users = {reg.user_id for reg in registrations}
-    reserved_emails = {_email(reg.user.email) for reg in registrations if reg.user.email}
+    reserved_users = {user_id for user_id, _email_value in registrations}
+    reserved_emails = {_email(email_value) for _user_id, email_value in registrations if email_value}
 
     candidates = {_email(ta.application.email) for ta in accepted}
     candidates.update(_email(guest.email) for guest in guests)
@@ -107,11 +107,12 @@ def extra_participant_rows(event, *, include_superusers=False):
     return list(rows.values())
 
 
-def public_participant_count(event):
+def public_participant_count(event, *, extra_rows=None):
     """Publicly visible registered users + unique eligible application/guest rows.
 
     Virtual speakers are deliberately not counted as registrations unless they
     also hold a registration, matching the pre-existing public count convention.
+    Pass extra_rows when the caller already has extra_participant_rows(event).
     """
     cached = getattr(event, "_cached_public_participant_count", None)
     if cached is not None:
@@ -122,20 +123,25 @@ def public_participant_count(event):
         registered_count = getattr(event, "public_registered_count_annotated", None)
     if registered_count is None:
         registered_count = compute_public_registered_count(event)
-    value = registered_count + len(extra_participant_rows(event))
+    if extra_rows is None:
+        extra_rows = extra_participant_rows(event)
+    value = registered_count + len(extra_rows)
     event._cached_public_participant_count = value
     return value
 
 
-def public_directory_extra_rows(event, *, companion=False):
+def public_directory_extra_rows(event, *, companion=False, candidates=None):
     """Directory-safe names for accepted free applicants and verified guests.
 
     Only call from authenticated, access-controlled directory endpoints. Never
     return applicant email, user id or registration id for an unlinked entry:
     being counted does not authorize private profiles or meeting requests.
+    Pass candidates when the caller already has extra_participant_rows(event).
     """
+    if candidates is None:
+        candidates = extra_participant_rows(event)
     rows = []
-    for candidate in extra_participant_rows(event):
+    for candidate in candidates:
         source = candidate["source"]
         display_name = (candidate["user_name"] or "").strip()
         # The owner roster can fall back to an email when an application has no
