@@ -36,6 +36,17 @@ _SENSITIVE_KEYS = frozenset({
     "cookie", "http_cookie", "set_cookie",
     "secret_hash", "client_secret", "clientsecret",
     "handle",
+    # Passwords and OTP / verification codes reach the backend in the body of
+    # auth, signup, change-password, reset and WordPress-webhook requests. The
+    # Sentry SDK attaches request bodies (max_request_body_size defaults to
+    # "medium") and copies locals into stack frames, so an unhandled 500 in any
+    # of those views would otherwise ship these values to Sentry. Matching is by
+    # exact normalized key, so benign fields such as country_code, reason_code,
+    # token_type or token_use are deliberately left untouched.
+    "password", "password2", "old_password", "new_password",
+    "confirm_password", "confirm_new_password",
+    "otp", "otp_code", "code", "verification_code",
+    "authorization_code", "token", "guest_token",
 })
 _DEFAULT_SESSION_COOKIE = "__Host-ecp_secure_session"
 _CHUNK = 16
@@ -43,7 +54,11 @@ _HINT_KEY = "_ecp_sensitive_values"
 
 _BEARER_RE = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9\-._~+/=]{8,}")
 _TOKEN_FIELD_RE = re.compile(
-    r"(?i)(\\?[\"']?(?:refresh_token|id_token|access_token|cognito_access_token)\\?[\"']?\s*[:=]\s*\\?[\"']?)"
+    r"(?i)(\\?[\"']?(?:"
+    r"refresh_token|id_token|access_token|cognito_access_token|authorization_code|"
+    r"confirm_new_password|confirm_password|new_password|old_password|password2|password|"
+    r"otp_code|otp"
+    r")\\?[\"']?\s*[:=]\s*\\?[\"']?)"
     r"[^\"'\\&\s,;}]+"
 )
 

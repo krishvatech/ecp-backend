@@ -148,6 +148,120 @@ class SentrySanitizerUnitTests(SimpleTestCase):
         get_scope.assert_not_called()
 
 
+class SentryCredentialKeyRedactionTests(SimpleTestCase):
+    """Password / OTP / auth-code fields that reach the backend in request bodies.
+
+    These never register raw values via protect_current_request(), so they rely
+    entirely on the key- and pattern-based layers. Values are synthetic.
+    """
+
+    PW = "SyntheticP@ssw0rd-123456"
+    OTP = "483921"
+    AUTHCODE = "oauthcode_" + "z" * 30
+
+    def _auth_event(self):
+        return {
+            "request": {
+                "data": {
+                    "password": self.PW,
+                    "password2": self.PW,
+                    "old_password": self.PW,
+                    "new_password": self.PW,
+                    "confirm_password": self.PW,
+                    "confirm_new_password": self.PW,
+                    "otp": self.OTP,
+                    "otp_code": self.OTP,
+                    "code": self.OTP,
+                    "verification_code": self.OTP,
+                    "authorization_code": self.AUTHCODE,
+                    "token": self.AUTHCODE,
+                    # Benign diagnostic fields that must NOT be redacted.
+                    "email": "member@example.com",
+                    "country_code": "US",
+                    "reason_code": "account_inactive",
+                    "token_type": "Bearer",
+                    "token_use": "access",
+                },
+                "query_string": f"password={self.PW}&code={self.OTP}&country_code=US&page=2",
+            },
+            "breadcrumbs": {
+                "values": [{"message": f'login {{"password": "{self.PW}", "otp": "{self.OTP}"}}'}]
+            },
+            "exception": {
+                "values": [
+                    {
+                        "type": "RuntimeError",
+                        "value": "login failed",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "post",
+                                    "vars": {
+                                        "password": f"'{self.PW}'",
+                                        "new_password": f"'{self.PW}'",
+                                        "code": f"'{self.OTP}'",
+                                        "country_code": "'US'",
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        }
+
+    def test_password_and_otp_keys_redacted_in_body(self):
+        data = before_send(self._auth_event(), {})["request"]["data"]
+        for key in (
+            "password", "password2", "old_password", "new_password",
+            "confirm_password", "confirm_new_password",
+            "otp", "otp_code", "code", "verification_code",
+            "authorization_code", "token",
+        ):
+            self.assertEqual(data[key], REDACTED, f"{key} must be redacted")
+
+    def test_benign_diagnostic_fields_not_over_redacted(self):
+        data = before_send(self._auth_event(), {})["request"]["data"]
+        self.assertEqual(data["email"], "member@example.com")
+        self.assertEqual(data["country_code"], "US")
+        self.assertEqual(data["reason_code"], "account_inactive")
+        self.assertEqual(data["token_type"], "Bearer")
+        self.assertEqual(data["token_use"], "access")
+
+    def test_password_scrubbed_in_query_string_breadcrumbs_and_frames(self):
+        event = before_send(self._auth_event(), {})
+        dumped = json.dumps(event)
+        self.assertNotIn(self.PW, dumped)
+        self.assertNotIn(self.AUTHCODE, dumped)
+        qs = event["request"]["query_string"]
+        self.assertNotIn(self.PW, qs)
+        self.assertIn("country_code=US", qs)  # benign query param preserved
+        self.assertIn("page=2", qs)
+        frame_vars = event["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+        self.assertEqual(frame_vars["password"], REDACTED)
+        self.assertEqual(frame_vars["new_password"], REDACTED)
+        self.assertIn("US", frame_vars["country_code"])  # benign local preserved
+
+    def test_transaction_events_redact_passwords(self):
+        transaction = {
+            "type": "transaction",
+            "request": {
+                "data": {"password": self.PW, "new_password": self.PW},
+                "headers": {"Authorization": f"Bearer {self.PW}"},
+            },
+            "spans": [{"description": f"POST password={self.PW}"}],
+        }
+        dumped = json.dumps(before_send_transaction(transaction, {}))
+        self.assertNotIn(self.PW, dumped)
+
+    def test_empty_values_left_untouched(self):
+        event = {"request": {"data": {"password": "", "code": None, "otp": self.OTP}}}
+        data = before_send(event, {})["request"]["data"]
+        self.assertEqual(data["password"], "")   # nothing sensitive to hide
+        self.assertIsNone(data["code"])
+        self.assertEqual(data["otp"], REDACTED)
+
+
 class _MemoryTransport(Transport):
     def __init__(self):
         super().__init__(options=None)
