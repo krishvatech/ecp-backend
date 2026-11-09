@@ -16068,7 +16068,11 @@ class PostAcceptanceFormAssignmentViewSet(viewsets.ModelViewSet):
                         file_order=idx
                     )
 
-            mark_assignment_completed(assignment)
+            # An edit of an already-completed form keeps its status and first
+            # completed_at; mark_assignment_completed() refuses completed forms
+            # (Sentry ECP-BACKEND-M: every edit 500'd and was rolled back).
+            if not can_edit_completed:
+                mark_assignment_completed(assignment)
 
             # Write back form data based on form type
             if assignment.form_type == 'participant_information':
