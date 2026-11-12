@@ -1250,6 +1250,29 @@ class ConversationViewSet(viewsets.ViewSet):
         Return events the current user is associated with (created or registered).
         Kept simple to match MessagesPage.jsx.normalizeEvents().
         """
+        def image_url(field_file):
+            # Return the URL, never the FieldFile itself: DRF's JSON encoder
+            # iterates a file object, downloads the image and fails to decode
+            # the bytes as UTF-8 (Sentry ECP-BACKEND-P).
+            if not field_file:
+                return ""
+            try:
+                return field_file.url
+            except Exception:
+                logger.warning("chat-events: no URL for image %r", getattr(field_file, "name", ""), exc_info=True)
+                return ""
+
+        def event_row(ev):
+            title = getattr(ev, "title", "") or getattr(ev, "name", "")
+            return {
+                "id": ev.id,
+                "title": title or f"Event #{ev.id}",
+                "cover_image": image_url(getattr(ev, "cover_image", None)),
+                "event": {"id": ev.id, "title": title, "end_time": ev.end_time, "status": ev.status},
+                "end_time": ev.end_time,
+                "status": ev.status,
+            }
+
         user = request.user
         if self._is_guest_user(user):
             guest = getattr(user, "guest", None)
@@ -1259,14 +1282,7 @@ class ConversationViewSet(viewsets.ViewSet):
                 ev = Event.objects.get(pk=guest.event_id)
             except Event.DoesNotExist:
                 return Response([], status=status.HTTP_200_OK)
-            return Response([{
-                "id": ev.id,
-                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
-                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
-                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
-                "end_time": ev.end_time,
-                "status": ev.status,
-            }], status=status.HTTP_200_OK)
+            return Response([event_row(ev)], status=status.HTTP_200_OK)
         out = []
 
         # registrations (cap to 200)
@@ -1275,15 +1291,7 @@ class ConversationViewSet(viewsets.ViewSet):
                 .filter(user_id=user.id)
                 .order_by("-registered_at")[:200])
         for r in regs:
-            ev = r.event
-            out.append({
-                "id": ev.id,
-                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
-                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
-                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
-                "end_time": ev.end_time,
-                "status": ev.status,
-            })
+            out.append(event_row(r.event))
 
         # events created by me (if not already present)
         mine = Event.objects.filter(created_by_id=user.id)[:200]
@@ -1291,14 +1299,7 @@ class ConversationViewSet(viewsets.ViewSet):
         for ev in mine:
             if ev.id in seen:
                 continue
-            out.append({
-                "id": ev.id,
-                "title": getattr(ev, "title", "") or getattr(ev, "name", "") or f"Event #{ev.id}",
-                "cover_image": getattr(ev, "cover_image", "") or getattr(ev, "banner", "") or "",
-                "event": {"id": ev.id, "title": getattr(ev, "title", "") or getattr(ev, "name", ""), "end_time": ev.end_time, "status": ev.status},
-                "end_time": ev.end_time,
-                "status": ev.status,
-            })
+            out.append(event_row(ev))
 
         return Response(out, status=status.HTTP_200_OK)
     
