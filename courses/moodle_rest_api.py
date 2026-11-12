@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 MOODLE_REST_PATH = "/webservice/rest/server.php"
 
 
+class MoodleUnavailable(Exception):
+    """
+    Moodle could not be asked: the request failed or timed out, returned an
+    HTTP error or a non-JSON body, or Moodle replied with an error. Callers
+    must not treat this as "no data", for example by deleting enrollments.
+    """
+
+
 class MoodleRestClient:
     """Client for the Moodle REST web service API."""
 
@@ -88,12 +96,20 @@ class MoodleRestClient:
     # ------------------------------------------------------------------
 
     def get_user_id_by_email(self, email: str) -> Optional[int]:
-        """Look up a Moodle user's internal ID by email address."""
+        """
+        Look up a Moodle user's internal ID by email address.
+
+        Returns None when Moodle has no user with that email. Raises
+        MoodleUnavailable when Moodle could not be asked, so callers never
+        mistake "no answer" for "no such user".
+        """
         result = self._call(
             "core_user_get_users_by_field",
             {"field": "email", "values[0]": email},
         )
-        if not isinstance(result, list) or not result:
+        if not isinstance(result, list):
+            raise MoodleUnavailable("Moodle did not answer core_user_get_users_by_field")
+        if not result:
             return None
         return result[0].get("id")
 
@@ -108,13 +124,16 @@ class MoodleRestClient:
           - summary: course description
           - courseimage: course image URL (if available)
           - progress: completion progress (0-100) if available
+
+        An empty list means Moodle answered and the user has no courses.
+        Raises MoodleUnavailable when Moodle could not be asked.
         """
         result = self._call(
             "core_enrol_get_users_courses",
             {"userid": user_id},
         )
         if not isinstance(result, list):
-            return []
+            raise MoodleUnavailable("Moodle did not answer core_enrol_get_users_courses")
         return result
 
     # ------------------------------------------------------------------

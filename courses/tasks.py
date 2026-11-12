@@ -7,19 +7,19 @@ Data sources:
 
 Schedule (configured in settings.py):
   - sync_moodle_courses_and_categories: every 6 hours (via EB)
-  - sync_all_user_moodle_enrollments:  every 30 minutes (via EB)
+  - sync_all_user_moodle_enrollments:  every 30 minutes (via EB), in chunks of users
   - sync_course_content:               on demand / after course sync (via Moodle REST)
 """
 import logging
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
-from celery import shared_task
+from celery import chain, shared_task
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
 from .models import MoodleCategory, MoodleCourse, MoodleEnrollment, CourseSection, CourseModule, ModuleCompletion
 from .edwiser_api import get_edwiser_client
-from .moodle_rest_api import get_moodle_client
+from .moodle_rest_api import MoodleUnavailable, get_moodle_client
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -84,22 +84,33 @@ def _sync_user_enrollments_via_moodle(user) -> int | None:
     Fetch enrolled courses for a user directly from Moodle REST API using email lookup.
     No WordPress/Edwiser ID required.
 
-    Returns number of enrollments synced. Returns None if Moodle API not configured.
+    Returns number of enrollments synced. Returns None if Moodle API not
+    configured, or if Moodle could not be asked; nothing is deleted then.
     """
     try:
         client = get_moodle_client()
     except ValueError:
         return None
 
-    # Look up Moodle user ID by email
-    moodle_user_id = client.get_user_id_by_email(user.email)
+    try:
+        # Look up Moodle user ID by email
+        moodle_user_id = client.get_user_id_by_email(user.email)
+        # Fetch enrolled courses from Moodle
+        courses_data = client.get_user_enrolled_courses(moodle_user_id) if moodle_user_id else None
+    except MoodleUnavailable as exc:
+        # No answer is not "no courses": keep the user's enrollments.
+        logger.warning(
+            "Moodle enrollment sync failed for user %s; keeping existing enrollments: %s",
+            user.pk,
+            exc,
+        )
+        return None
+
     if not moodle_user_id:
         logger.info("Moodle user not found for %s", user.email)
         _clear_unlinked_user_enrollments(user, reason="not found in Moodle by email")
         return 0
 
-    # Fetch enrolled courses from Moodle
-    courses_data = client.get_user_enrolled_courses(moodle_user_id)
     if not courses_data:
         logger.info("User %s has no enrollments in Moodle", user.email)
         _clear_unlinked_user_enrollments(user, reason="no enrollments found in Moodle")
@@ -248,6 +259,18 @@ def sync_moodle_courses_and_categories(self):
     return {"categories": len(category_map), "courses": synced}
 
 
+# Users per enrollment-sync chunk. Each user costs one WordPress /my-courses
+# call of about 1 s, so a chunk takes about 30 s. Syncing every user in one
+# task took 236-240 s on prod with 215 users and kept hitting the 240 s
+# CELERY_TASK_SOFT_TIME_LIMIT (Sentry ECP-BACKEND-6).
+ENROLLMENT_SYNC_CHUNK_SIZE = 25
+
+
+def _enrollment_sync_users():
+    """Users the Edwiser Bridge sync covers: active, with a known WordPress ID."""
+    return User.objects.filter(is_active=True, profile__wordpress_id__isnull=False)
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_all_user_moodle_enrollments(self):
     """
@@ -255,36 +278,92 @@ def sync_all_user_moodle_enrollments(self):
     sync their Edwiser Bridge enrollments + progress into MoodleEnrollment.
     Runs every 30 minutes.
 
+    This task only splits the users into chunks of ENROLLMENT_SYNC_CHUNK_SIZE
+    and queues them as a chain, so each chunk is its own short task and the
+    chunks run one after another. One at a time keeps the WordPress load and
+    worker use the same as the old single task. A chunk that fails (for
+    example WordPress hangs and the chunk hits its time limit) stops the
+    chain, so a WordPress outage holds one worker, not every worker.
+
     DEPRECATED: Use sync_all_user_moodle_enrollments_via_moodle instead.
     Kept for backwards compatibility.
     """
     try:
-        client = get_edwiser_client()
+        get_edwiser_client()
     except ValueError as e:
         logger.warning("Edwiser Bridge not configured, skipping enrollment sync: %s", e)
         return {"skipped": True}
 
-    # Only process users with a known WordPress ID (the EB API key)
+    user_ids = list(_enrollment_sync_users().order_by("id").values_list("id", flat=True))
+    if not user_ids:
+        logger.info("EB enrollment sync: no linked users, nothing to queue")
+        return {"users": 0, "chunks": 0}
+
+    size = ENROLLMENT_SYNC_CHUNK_SIZE
+    chunks = [user_ids[i:i + size] for i in range(0, len(user_ids), size)]
+    chunk_count = len(chunks)
+    chain(
+        *(
+            sync_user_moodle_enrollments_chunk.si(chunk_ids, chunk_number, chunk_count)
+            for chunk_number, chunk_ids in enumerate(chunks, start=1)
+        )
+    ).apply_async()
+
+    logger.info(
+        "EB enrollment sync queued: %d users in %d chunk(s)",
+        len(user_ids),
+        chunk_count,
+    )
+    return {"users": len(user_ids), "chunks": chunk_count}
+
+
+@shared_task(bind=True)
+def sync_user_moodle_enrollments_chunk(self, user_ids, chunk_number=1, chunk_count=1):
+    """
+    Sync Edwiser Bridge enrollments for one chunk of users queued by
+    sync_all_user_moodle_enrollments. Users deactivated or unlinked after the
+    chunk was queued are skipped.
+    """
+    try:
+        client = get_edwiser_client()
+    except ValueError as e:
+        logger.warning("Edwiser Bridge not configured, skipping enrollment sync chunk: %s", e)
+        return {"skipped": True}
+
     users = (
-        User.objects.filter(is_active=True, profile__wordpress_id__isnull=False)
+        _enrollment_sync_users()
+        .filter(id__in=user_ids)
         .select_related("profile")
         .only("id", "email", "profile__wordpress_id")
+        .order_by("id")
     )
     synced_users = 0
     synced_enrollments = 0
+    failed_users = 0
 
     for user in users:
         count = _sync_user_enrollments(client, user)
-        if count is not None:
+        if count is None:
+            failed_users += 1
+        else:
             synced_users += 1
             synced_enrollments += count
 
     logger.info(
-        "EB enrollment sync complete: %d users, %d enrollments",
+        "EB enrollment sync chunk %d/%d complete: %d users, %d enrollments, %d failed",
+        chunk_number,
+        chunk_count,
         synced_users,
         synced_enrollments,
+        failed_users,
     )
-    return {"users": synced_users, "enrollments": synced_enrollments}
+    return {
+        "chunk": chunk_number,
+        "chunks": chunk_count,
+        "users": synced_users,
+        "enrollments": synced_enrollments,
+        "failed": failed_users,
+    }
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -377,6 +456,7 @@ def _sync_user_enrollments(client, user) -> int | None:
       }
 
     Returns number of enrollments synced. Returns 0 when user has no linked wordpress_id.
+    Returns None when Edwiser Bridge could not be asked; nothing is deleted then.
     """
     eb_wp_user_id = _get_user_edwiser_wp_id(user)
     if not eb_wp_user_id:
@@ -388,6 +468,13 @@ def _sync_user_enrollments(client, user) -> int | None:
         return 0
 
     eb_courses = client.get_user_courses(wp_user_id=eb_wp_user_id)
+    if eb_courses is None:
+        # No answer is not "no courses": keep the user's enrollments.
+        logger.warning(
+            "EB enrollment sync failed for user %s; keeping existing enrollments",
+            user.pk,
+        )
+        return None
     synced = 0
     active_course_keys = set()  # track moodle_ids returned by EB API
 
@@ -627,7 +714,11 @@ def sync_user_module_completions(self, course_db_id: int, user_id: int):
     # Look up the real Moodle user ID by email.
     # NOTE: profile.moodle_user_id stores the EB/WordPress user ID (repurposed field),
     # NOT the Moodle LMS user ID — so we must always query Moodle directly here.
-    moodle_user_id = client.get_user_id_by_email(user.email)
+    try:
+        moodle_user_id = client.get_user_id_by_email(user.email)
+    except MoodleUnavailable as exc:
+        logger.warning("Cannot sync completions for user %s: %s", user.pk, exc)
+        return {"skipped": True}
     if not moodle_user_id:
         logger.debug("Moodle user not found for %s", user.email)
         return {"skipped": True}

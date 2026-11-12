@@ -205,7 +205,7 @@ class EdwiserBridgeAPIClient:
         logger.warning("EB user not found on WordPress for email: %s", email)
         return None
 
-    def get_user_courses(self, wp_user_id: int = None, email: str = None) -> List[Dict]:
+    def get_user_courses(self, wp_user_id: int = None, email: str = None) -> Optional[List[Dict]]:
         """
         Fetch the enrolled courses + progress for a WordPress user.
 
@@ -217,6 +217,10 @@ class EdwiserBridgeAPIClient:
             "enrolled_courses": [{..., "progress": {"percentage": N, "completed": bool, "course_url": "...?mdl_course_id=N"}}],
             ...
           }
+
+        Returns None when Edwiser Bridge could not be asked (request failed,
+        HTTP error, non-JSON reply). An empty list means EB answered and the
+        user has no courses. Callers must not delete enrollments on None.
         """
         if email:
             params = {"email": email}
@@ -226,7 +230,7 @@ class EdwiserBridgeAPIClient:
             return []
         result = self._get("/my-courses", params=params)
         if not isinstance(result, dict):
-            return []
+            return None
         return result.get("enrolled_courses") or []
 
     def get_wp_user_id_by_email(self, email: str) -> Optional[int]:
