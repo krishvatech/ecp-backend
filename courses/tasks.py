@@ -11,14 +11,17 @@ Schedule (configured in settings.py):
   - sync_course_content:               on demand / after course sync (via Moodle REST)
 """
 import logging
+from datetime import timedelta
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from celery import chain, shared_task
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import transaction
+from django.utils import timezone
 
 from .models import MoodleCategory, MoodleCourse, MoodleEnrollment, CourseSection, CourseModule, ModuleCompletion
-from .edwiser_api import get_edwiser_client
+from .edwiser_api import EdwiserRateLimited, get_edwiser_client
 from .moodle_rest_api import MoodleUnavailable, get_moodle_client
 
 User = get_user_model()
@@ -265,6 +268,39 @@ def sync_moodle_courses_and_categories(self):
 # CELERY_TASK_SOFT_TIME_LIMIT (Sentry ECP-BACKEND-6).
 ENROLLMENT_SYNC_CHUNK_SIZE = 25
 
+# When imaa-institute.org answers 429 Too Many Requests, the sync stops and
+# leaves WordPress alone for a while (Sentry ECP-BACKEND-8). Asking again for
+# every remaining user only got one 429 (and one Sentry error) per user.
+# A Retry-After header is honoured within these bounds. The minimum covers the
+# rest of the current run; the next 30-minute run tries again.
+EB_RATE_LIMIT_PAUSE_KEY = "courses:eb_enrollment_sync:paused_until"
+EB_RATE_LIMIT_MIN_PAUSE_SECONDS = 10 * 60
+EB_RATE_LIMIT_MAX_PAUSE_SECONDS = 2 * 60 * 60
+
+
+def _eb_pause_seconds(retry_after: int | None) -> int:
+    return min(max(retry_after or 0, EB_RATE_LIMIT_MIN_PAUSE_SECONDS), EB_RATE_LIMIT_MAX_PAUSE_SECONDS)
+
+
+def _eb_sync_paused_until() -> str | None:
+    """When the sync may ask WordPress again (ISO time), or None if not paused."""
+    try:
+        return cache.get(EB_RATE_LIMIT_PAUSE_KEY)
+    except Exception:
+        # Redis down: sync as before rather than never.
+        logger.warning("Could not read the EB enrollment sync pause from the cache", exc_info=True)
+        return None
+
+
+def _pause_eb_sync(retry_after: int | None) -> str:
+    seconds = _eb_pause_seconds(retry_after)
+    until = (timezone.now() + timedelta(seconds=seconds)).isoformat()
+    try:
+        cache.set(EB_RATE_LIMIT_PAUSE_KEY, until, timeout=seconds)
+    except Exception:
+        logger.warning("Could not store the EB enrollment sync pause in the cache", exc_info=True)
+    return until
+
 
 def _enrollment_sync_users():
     """Users the Edwiser Bridge sync covers: active, with a known WordPress ID."""
@@ -293,6 +329,11 @@ def sync_all_user_moodle_enrollments(self):
     except ValueError as e:
         logger.warning("Edwiser Bridge not configured, skipping enrollment sync: %s", e)
         return {"skipped": True}
+
+    paused_until = _eb_sync_paused_until()
+    if paused_until:
+        logger.info("EB enrollment sync skipped: WordPress rate limit, paused until %s", paused_until)
+        return {"skipped": "rate_limited", "paused_until": paused_until}
 
     user_ids = list(_enrollment_sync_users().order_by("id").values_list("id", flat=True))
     if not user_ids:
@@ -323,6 +364,10 @@ def sync_user_moodle_enrollments_chunk(self, user_ids, chunk_number=1, chunk_cou
     Sync Edwiser Bridge enrollments for one chunk of users queued by
     sync_all_user_moodle_enrollments. Users deactivated or unlinked after the
     chunk was queued are skipped.
+
+    On a 429 from WordPress the chunk stops, keeps the remaining users'
+    enrollments, logs one warning and pauses the sync, so the chunks still
+    queued after it skip without asking WordPress.
     """
     try:
         client = get_edwiser_client()
@@ -330,7 +375,17 @@ def sync_user_moodle_enrollments_chunk(self, user_ids, chunk_number=1, chunk_cou
         logger.warning("Edwiser Bridge not configured, skipping enrollment sync chunk: %s", e)
         return {"skipped": True}
 
-    users = (
+    paused_until = _eb_sync_paused_until()
+    if paused_until:
+        logger.info(
+            "EB enrollment sync chunk %d/%d skipped: WordPress rate limit, paused until %s",
+            chunk_number,
+            chunk_count,
+            paused_until,
+        )
+        return {"chunk": chunk_number, "chunks": chunk_count, "skipped": "rate_limited", "paused_until": paused_until}
+
+    users = list(
         _enrollment_sync_users()
         .filter(id__in=user_ids)
         .select_related("profile")
@@ -341,8 +396,35 @@ def sync_user_moodle_enrollments_chunk(self, user_ids, chunk_number=1, chunk_cou
     synced_enrollments = 0
     failed_users = 0
 
-    for user in users:
-        count = _sync_user_enrollments(client, user)
+    for index, user in enumerate(users):
+        try:
+            count = _sync_user_enrollments(client, user)
+        except EdwiserRateLimited as e:
+            not_synced = len(users) - index
+            paused_until = _pause_eb_sync(e.retry_after)
+            logger.warning(
+                "EB enrollment sync chunk %d/%d stopped: WordPress answered 429 Too Many Requests "
+                "(Retry-After: %s, reply: %r). %d users synced, %d failed, %d not synced (enrollments kept). "
+                "Sync paused until %s.",
+                chunk_number,
+                chunk_count,
+                e.retry_after,
+                e.reply,
+                synced_users,
+                failed_users,
+                not_synced,
+                paused_until,
+            )
+            return {
+                "chunk": chunk_number,
+                "chunks": chunk_count,
+                "users": synced_users,
+                "enrollments": synced_enrollments,
+                "failed": failed_users,
+                "rate_limited": True,
+                "not_synced": not_synced,
+                "paused_until": paused_until,
+            }
         if count is None:
             failed_users += 1
         else:
@@ -412,7 +494,18 @@ def sync_single_user_moodle_enrollments(self, user_id: int):
         logger.warning("Cannot sync EB enrollments for user %s: %s", user_id, e)
         return {"skipped": True}
 
-    count = _sync_user_enrollments(client, user)
+    try:
+        count = _sync_user_enrollments(client, user)
+    except EdwiserRateLimited as e:
+        paused_until = _pause_eb_sync(e.retry_after)
+        logger.warning(
+            "EB enrollment sync for user %s skipped: WordPress answered 429 Too Many Requests "
+            "(Retry-After: %s); enrollments kept; sync paused until %s",
+            user_id,
+            e.retry_after,
+            paused_until,
+        )
+        return {"user_id": user_id, "skipped": "rate_limited", "paused_until": paused_until}
     return {"user_id": user_id, "enrollments": count}
 
 
@@ -457,6 +550,7 @@ def _sync_user_enrollments(client, user) -> int | None:
 
     Returns number of enrollments synced. Returns 0 when user has no linked wordpress_id.
     Returns None when Edwiser Bridge could not be asked; nothing is deleted then.
+    Raises EdwiserRateLimited on a 429, before anything is changed.
     """
     eb_wp_user_id = _get_user_edwiser_wp_id(user)
     if not eb_wp_user_id:

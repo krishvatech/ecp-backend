@@ -13,6 +13,9 @@ Endpoints used:
 Authentication: EB_WP_API_USER / EB_WP_API_PASSWORD (WordPress Application Password)
 """
 import logging
+from datetime import datetime, timezone as dt_timezone
+from email.utils import parsedate_to_datetime
+
 import requests
 from django.conf import settings
 from requests.auth import HTTPBasicAuth
@@ -21,6 +24,39 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 EB_API_BASE = "/eb/api/v1"
+
+
+class EdwiserRateLimited(Exception):
+    """
+    imaa-institute.org answered 429 Too Many Requests (Sentry ECP-BACKEND-8).
+
+    Raised instead of returning None so the enrollment sync can stop asking
+    for the rest of its users rather than getting one 429 per user.
+    `reply` is the start of the response body; it tells a Cloudflare rate
+    limit ("error code: 1015") apart from one set by WordPress or its host.
+    """
+
+    def __init__(self, path: str, retry_after: Optional[int] = None, reply: str = ""):
+        self.path = path
+        self.retry_after = retry_after  # seconds; None when the reply did not say
+        self.reply = reply
+        super().__init__(f"Edwiser Bridge rate-limited {path} (Retry-After: {retry_after})")
+
+
+def _retry_after_seconds(value: Optional[str]) -> Optional[int]:
+    """Parse a Retry-After header (seconds or an HTTP date) into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt_timezone.utc)
+    return max(0, int((when - datetime.now(dt_timezone.utc)).total_seconds()))
 
 
 class EdwiserBridgeAPIClient:
@@ -46,8 +82,13 @@ class EdwiserBridgeAPIClient:
             return HTTPBasicAuth(self.api_user, self.api_password)
         return None
 
-    def _get(self, path: str, params: Optional[Dict] = None) -> Any:
-        """Execute a GET request against the WP REST API."""
+    def _get(self, path: str, params: Optional[Dict] = None, raise_on_rate_limit: bool = False) -> Any:
+        """
+        Execute a GET request against the WP REST API.
+
+        Returns None on any failure. With raise_on_rate_limit, a 429 raises
+        EdwiserRateLimited instead (and is not logged as an error here).
+        """
         url = f"{self.base_url}{EB_API_BASE}{path}"
         try:
             resp = requests.get(
@@ -60,6 +101,13 @@ class EdwiserBridgeAPIClient:
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as e:
+            response = e.response
+            if raise_on_rate_limit and response is not None and response.status_code == 429:
+                raise EdwiserRateLimited(
+                    path,
+                    retry_after=_retry_after_seconds(response.headers.get("Retry-After")),
+                    reply=" ".join((response.text or "").split())[:200],
+                ) from e
             logger.error("Edwiser Bridge HTTP error %s: %s", path, e)
             return None
         except requests.exceptions.RequestException as e:
@@ -221,6 +269,9 @@ class EdwiserBridgeAPIClient:
         Returns None when Edwiser Bridge could not be asked (request failed,
         HTTP error, non-JSON reply). An empty list means EB answered and the
         user has no courses. Callers must not delete enrollments on None.
+
+        Raises EdwiserRateLimited on 429 Too Many Requests, so a caller
+        looping over users can stop instead of asking again for each one.
         """
         if email:
             params = {"email": email}
@@ -228,7 +279,7 @@ class EdwiserBridgeAPIClient:
             params = {"user_id": wp_user_id}
         else:
             return []
-        result = self._get("/my-courses", params=params)
+        result = self._get("/my-courses", params=params, raise_on_rate_limit=True)
         if not isinstance(result, dict):
             return None
         return result.get("enrolled_courses") or []

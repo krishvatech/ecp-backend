@@ -50,6 +50,8 @@ class FakeEdwiserClient:
     COGNITO_USER_POOL_ID="",
     COGNITO_REGION="",
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    # The sync reads its WordPress rate-limit pause from the cache; keep it local.
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
 )
 class EnrollmentSyncChunkTests(TestCase):
     def setUp(self):
