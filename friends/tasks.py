@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 SUGGESTION_DISPATCH_HOUR = 9
 SUGGESTION_DISPATCH_WINDOW_MINUTES = 5
 SUGGESTION_LOCK_TTL_SECONDS = 48 * 60 * 60
+HIDDEN_PROFILE_STATUSES = ("suspended", "fake", "deceased")
+DIGEST_USER_CHUNK_SIZE = 200
 
 
 def _my_friend_ids(me_id: int) -> set[int]:
@@ -75,7 +77,7 @@ def count_connection_suggestions(me_id: int, mutual_threshold: int = 2) -> int:
         id__in=pending_ids
     ).exclude(
         # Same rule as the suggestions page, so the count doesn't include people it hides.
-        profile__profile_status__in=("suspended", "fake", "deceased")
+        profile__profile_status__in=HIDDEN_PROFILE_STATUSES
     ).distinct()
 
     qs = qs.annotate(
@@ -120,6 +122,118 @@ def count_group_suggestions(me_id: int, friends_in_group_threshold: int = 2) -> 
     ).filter(mutuals__gte=friends_in_group_threshold)
 
     return qs.count()
+
+
+def _digest_counts_for_users(
+    user_ids,
+    mutual_threshold: int = 2,
+    friends_in_group_threshold: int = 2,
+) -> dict[int, tuple[int, int]]:
+    """
+    Same numbers as count_connection_suggestions / count_group_suggestions,
+    for many users at once with a fixed number of queries (no query per user).
+
+    Returns {user_id: (connection_count, group_count)}.
+    """
+    user_ids = set(user_ids)
+    counts = {uid: (0, 0) for uid in user_ids}
+    if not user_ids:
+        return counts
+
+    # Friends of each user in this batch.
+    my_friends = {uid: set() for uid in user_ids}
+    for u1, u2 in Friendship.objects.filter(
+        Q(user1_id__in=user_ids) | Q(user2_id__in=user_ids)
+    ).values_list("user1_id", "user2_id"):
+        if u1 in my_friends:
+            my_friends[u1].add(u2)
+        if u2 in my_friends:
+            my_friends[u2].add(u1)
+
+    # People with no friends get (0, 0); nothing else to load for them.
+    with_friends = {uid for uid, friends in my_friends.items() if friends}
+    if not with_friends:
+        return counts
+    all_friend_ids = set().union(*(my_friends[uid] for uid in with_friends))
+
+    # Every friendship row of those friends, kept per row so the mutual
+    # count matches the SQL Count() in count_connection_suggestions.
+    friend_rows = {fid: [] for fid in all_friend_ids}
+    for u1, u2 in Friendship.objects.filter(
+        Q(user1_id__in=all_friend_ids) | Q(user2_id__in=all_friend_ids)
+    ).values_list("user1_id", "user2_id"):
+        if u1 in friend_rows:
+            friend_rows[u1].append(u2)
+        if u2 in friend_rows:
+            friend_rows[u2].append(u1)
+
+    pending = {uid: set() for uid in with_friends}
+    for from_id, to_id in FriendRequest.objects.filter(
+        status=FriendRequest.PENDING
+    ).filter(
+        Q(from_user_id__in=with_friends) | Q(to_user_id__in=with_friends)
+    ).values_list("from_user_id", "to_user_id"):
+        if from_id in pending:
+            pending[from_id].add(to_id)
+        if to_id in pending:
+            pending[to_id].add(from_id)
+
+    mutuals_by_user = {}
+    candidate_ids = set()
+    for uid in with_friends:
+        friends = my_friends[uid]
+        skip = friends | pending[uid] | {uid}
+        mutuals = {}
+        for fid in friends:
+            for other in friend_rows[fid]:
+                if other not in skip:
+                    mutuals[other] = mutuals.get(other, 0) + 1
+        mutuals_by_user[uid] = mutuals
+        candidate_ids.update(mutuals)
+
+    hidden_ids = set(
+        UserProfile.objects.filter(
+            user_id__in=candidate_ids,
+            profile_status__in=HIDDEN_PROFILE_STATUSES,
+        ).values_list("user_id", flat=True)
+    ) if candidate_ids else set()
+
+    # Groups: active memberships of friends in public top-level groups
+    # (Group.objects already leaves out deleted groups).
+    my_groups = {uid: set() for uid in with_friends}
+    for uid, gid in GroupMembership.objects.filter(
+        user_id__in=with_friends
+    ).values_list("user_id", "group_id"):
+        my_groups[uid].add(gid)
+
+    friend_groups = {}
+    for uid, gid in GroupMembership.objects.filter(
+        status=GroupMembership.STATUS_ACTIVE,
+        user_id__in=all_friend_ids,
+        group_id__in=Group.objects.filter(
+            visibility=Group.VISIBILITY_PUBLIC,
+            parent__isnull=True,
+        ).values("id"),
+    ).values_list("user_id", "group_id"):
+        friend_groups.setdefault(uid, []).append(gid)
+
+    for uid in with_friends:
+        conn_count = sum(
+            1
+            for other, n in mutuals_by_user[uid].items()
+            if n >= mutual_threshold and other not in hidden_ids
+        )
+
+        friends_per_group = {}
+        for fid in my_friends[uid]:
+            for gid in friend_groups.get(fid, ()):
+                if gid not in my_groups[uid]:
+                    friends_per_group[gid] = friends_per_group.get(gid, 0) + 1
+        group_count = sum(1 for n in friends_per_group.values() if n >= friends_in_group_threshold)
+
+        counts[uid] = (conn_count, group_count)
+
+    return counts
 
 
 def _get_timezone_or_default(tz_name: str) -> Optional[ZoneInfo]:
@@ -207,58 +321,70 @@ def send_suggestion_digest_for_timezone(
     skipped_empty = 0
     skipped_locked = 0
 
-    users_qs = (
+    user_ids = list(
         User.objects.filter(is_active=True, profile__timezone=tz_name)
-        .select_related("profile")
-        .only("id", "profile__timezone")
+        .order_by("id")
+        .values_list("id", flat=True)
     )
 
-    for u in users_qs.iterator(chunk_size=200):
-        lock_key = f"suggestion_digest:{u.id}:{local_date}:{tz_name}"
-        if not cache.add(lock_key, "1", timeout=SUGGESTION_LOCK_TTL_SECONDS):
-            skipped_locked += 1
-            continue
+    # Work in batches with a fixed number of queries per batch. A query per
+    # user here was reported by Sentry as an N+1 (ECP-BACKEND-G).
+    for start in range(0, len(user_ids), DIGEST_USER_CHUNK_SIZE):
+        chunk = user_ids[start:start + DIGEST_USER_CHUNK_SIZE]
 
-        already = Notification.objects.filter(
-            recipient_id=u.id,
-            kind="suggestion_digest",
-            created_at__gte=start_utc,
-            created_at__lt=end_utc,
-        ).exists()
-        if already:
-            skipped_already_sent += 1
-            continue
-
-        conn_count = count_connection_suggestions(u.id, mutual_threshold=mutual_threshold)
-        group_count = count_group_suggestions(u.id, friends_in_group_threshold=friends_in_group_threshold)
-
-        if conn_count == 0 and group_count == 0:
-            skipped_empty += 1
-            continue
-
-        parts = []
-        if conn_count:
-            parts.append(f"{conn_count} new connection suggestions")
-        if group_count:
-            parts.append(f"{group_count} groups your friends are active in today")
-
-        Notification.objects.create(
-            recipient_id=u.id,
-            actor=None,
-            kind="suggestion_digest",
-            title="Daily suggestions",
-            description=" - ".join(parts),
-            state="info",
-            data={
-                "connection_count": conn_count,
-                "group_count": group_count,
-                "mutual_threshold": mutual_threshold,
-                "friends_in_group_threshold": friends_in_group_threshold,
-                "date": str(local_date),
-                "timezone": tz_name,
-            },
+        already_sent = set(
+            Notification.objects.filter(
+                recipient_id__in=chunk,
+                kind="suggestion_digest",
+                created_at__gte=start_utc,
+                created_at__lt=end_utc,
+            ).values_list("recipient_id", flat=True)
         )
-        created += 1
+        to_check = [uid for uid in chunk if uid not in already_sent]
+        skipped_already_sent += len(chunk) - len(to_check)
+
+        counts = _digest_counts_for_users(
+            to_check,
+            mutual_threshold=mutual_threshold,
+            friends_in_group_threshold=friends_in_group_threshold,
+        )
+
+        for uid in to_check:
+            conn_count, group_count = counts[uid]
+            if conn_count == 0 and group_count == 0:
+                skipped_empty += 1
+                continue
+
+            # Another run for the same timezone and day may be sending right
+            # now; the lock makes sure only one of them creates the row.
+            lock_key = f"suggestion_digest:{uid}:{local_date}:{tz_name}"
+            if not cache.add(lock_key, "1", timeout=SUGGESTION_LOCK_TTL_SECONDS):
+                skipped_locked += 1
+                continue
+
+            parts = []
+            if conn_count:
+                parts.append(f"{conn_count} new connection suggestions")
+            if group_count:
+                parts.append(f"{group_count} groups your friends are active in today")
+
+            Notification.objects.create(
+                recipient_id=uid,
+                actor=None,
+                kind="suggestion_digest",
+                title="Daily suggestions",
+                description=" - ".join(parts),
+                state="info",
+                data={
+                    "connection_count": conn_count,
+                    "group_count": group_count,
+                    "mutual_threshold": mutual_threshold,
+                    "friends_in_group_threshold": friends_in_group_threshold,
+                    "date": str(local_date),
+                    "timezone": tz_name,
+                },
+            )
+            created += 1
 
     return {
         "created": created,

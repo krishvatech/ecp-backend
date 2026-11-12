@@ -1,4 +1,5 @@
 """Daily "Suggestion Digest" notification (friends.tasks)."""
+import random
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -6,13 +7,16 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from community.models import Community
 from friends.models import Friendship, FriendRequest, Notification
 from friends.tasks import (
+    _digest_counts_for_users,
     _local_day_bounds_utc,
     count_connection_suggestions,
     count_group_suggestions,
@@ -166,6 +170,81 @@ class CountGroupSuggestionsTests(DigestTestCase):
         self.assertEqual(count_group_suggestions(self.me.id), 0)
 
 
+class BulkDigestCountsTests(DigestTestCase):
+    """The batched counts must match the one-person-at-a-time counts exactly."""
+
+    def build_random_network(self, seed):
+        # Each seed gets its own people and groups, so networks never touch.
+        rng = random.Random(seed)
+        statuses = [None] * 8 + ["suspended", "fake", "deceased"]
+        people = [
+            self.user(f"digest-net{seed}-{i}", profile_status=rng.choice(statuses)) for i in range(28)
+        ]
+
+        for i, a in enumerate(people):
+            for b in people[i + 1:]:
+                if rng.random() < 0.22:
+                    friendship = self.befriend(a, b)
+                    if rng.random() < 0.15:
+                        # Removed/blocked rows still count today, in both versions.
+                        friendship.status = rng.choice([Friendship.STATUS_REMOVED, Friendship.STATUS_BLOCKED])
+                        friendship.save(update_fields=["status"])
+                elif rng.random() < 0.05:
+                    FriendRequest.objects.create(
+                        from_user=a, to_user=b,
+                        status=rng.choice([FriendRequest.PENDING, FriendRequest.DECLINED]),
+                    )
+
+        prefix = f"digest-net{seed}"
+        parent = self.group(f"{prefix}-parent")
+        groups = [
+            parent,
+            self.group(f"{prefix}-public-a"),
+            self.group(f"{prefix}-public-b"),
+            self.group(f"{prefix}-private", visibility=Group.VISIBILITY_PRIVATE),
+            self.group(f"{prefix}-child", parent=parent),
+            self.group(f"{prefix}-deleted", is_deleted=True),
+        ]
+        for group in groups:
+            for person in people:
+                if rng.random() < 0.3:
+                    status = rng.choice([GroupMembership.STATUS_ACTIVE] * 3 + [GroupMembership.STATUS_PENDING])
+                    self.join(group, person, status=status)
+        return people
+
+    def test_matches_the_per_person_counts(self):
+        for seed in (1, 7, 42):
+            with self.subTest(seed=seed):
+                people = self.build_random_network(seed)
+                ids = [p.id for p in people]
+
+                for mutual, in_group in ((1, 1), (2, 2), (3, 2)):
+                    bulk = _digest_counts_for_users(ids, mutual, in_group)
+                    expected = {
+                        uid: (count_connection_suggestions(uid, mutual), count_group_suggestions(uid, in_group))
+                        for uid in ids
+                    }
+                    self.assertEqual(bulk, expected)
+                    self.assertTrue(any(c or g for c, g in expected.values()))
+
+                    # Splitting into batches must not change anyone's numbers.
+                    half = len(ids) // 2
+                    split = {**_digest_counts_for_users(ids[:half], mutual, in_group),
+                             **_digest_counts_for_users(ids[half:], mutual, in_group)}
+                    self.assertEqual(split, expected)
+
+    def test_empty_input(self):
+        self.assertEqual(_digest_counts_for_users([]), {})
+
+    def test_people_without_friends_cost_one_query(self):
+        loners = [self.user(f"digest-loner-{i}").id for i in range(10)]
+
+        with self.assertNumQueries(1):
+            counts = _digest_counts_for_users(loners)
+
+        self.assertEqual(set(counts.values()), {(0, 0)})
+
+
 class SendSuggestionDigestForTimezoneTests(DigestTestCase):
     def setUp(self):
         super().setUp()
@@ -223,7 +302,47 @@ class SendSuggestionDigestForTimezoneTests(DigestTestCase):
 
         self.assertEqual(self.digests().count(), 1)
         self.assertEqual(result["created"], 0)
+        self.assertGreaterEqual(result["skipped_already_sent"], 1)
+
+    def test_run_that_loses_the_lock_race_does_not_notify(self):
+        # Another run for the same day already holds this person's lock but
+        # has not saved the notification yet.
+        moment = at_utc(2026, 11, 5, 3, 30)
+        cache.add(f"suggestion_digest:{self.me.id}:2026-11-05:Asia/Kolkata", "1")
+
+        with frozen_now(moment):
+            result = send_suggestion_digest_for_timezone("Asia/Kolkata")
+
+        self.assertEqual(self.digests().count(), 0)
         self.assertGreaterEqual(result["skipped_locked"], 1)
+
+    def test_lock_is_only_taken_for_people_who_get_a_notification(self):
+        for i in range(5):
+            self.user(f"digest-alone-{i}")
+
+        with mock.patch("friends.tasks.cache.add", wraps=cache.add) as add:
+            result = send_suggestion_digest_for_timezone("Asia/Kolkata")
+
+        self.assertEqual(add.call_count, result["created"])
+        self.assertGreaterEqual(result["skipped_empty"], 5)
+
+    def test_query_count_does_not_grow_with_the_number_of_people(self):
+        # Sentry ECP-BACKEND-G: Asia/Dubai ran the same queries once per person.
+        def queries_for_one_run():
+            Notification.objects.filter(kind="suggestion_digest").delete()
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                send_suggestion_digest_for_timezone("Asia/Kolkata")
+            return len(ctx.captured_queries)
+
+        before = queries_for_one_run()
+        for i in range(15):
+            self.user(f"digest-nofriends-{i}")
+        for i in range(5):
+            self.befriend(self.user(f"digest-pair-a{i}"), self.user(f"digest-pair-b{i}"))
+        after = queries_for_one_run()
+
+        self.assertEqual(after, before)
 
     def test_lost_cache_still_does_not_notify_twice(self):
         Notification.objects.create(recipient=self.me, kind="suggestion_digest", title="Daily suggestions")
