@@ -1,5 +1,5 @@
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from rest_framework.test import APITestCase
 
@@ -128,6 +128,94 @@ class LinkedInProfileImportConfirmTests(TestCase):
         import_linkedin_profile_data(user=self.user, profile_data=self.payload())
 
         self.assertEqual(Experience.objects.filter(user=self.user).count(), 1)
+
+
+@override_settings(COGNITO_REGION="", COGNITO_USER_POOL_ID="")
+class LinkedInProfileImportNameTests(TestCase):
+    """An import must never change the name a member set up their account with."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="linkedin-name-test",
+            password="Password123!",
+        )
+        self.profile, _ = UserProfile.objects.get_or_create(user=self.user)
+
+    def payload(self, full_name="Jordan Sample"):
+        return {
+            "full_name": full_name,
+            "headline": "Imported Headline",
+            "experiences": [],
+            "educations": [],
+            "certifications": [],
+            "skills": [],
+        }
+
+    def import_pdf(self, full_name="Jordan Sample"):
+        result = import_linkedin_profile_data(
+            user=self.user,
+            profile_data=self.payload(full_name),
+        )
+        self.profile.refresh_from_db()
+        self.user.refresh_from_db()
+        return result
+
+    def test_import_keeps_existing_profile_name(self):
+        self.profile.full_name = "Alex Example"
+        self.profile.save(update_fields=["full_name"])
+
+        self.import_pdf("Alexander Example-Other")
+
+        self.assertEqual(self.profile.full_name, "Alex Example")
+        self.assertEqual(self.profile.headline, "Imported Headline")
+
+    def test_import_keeps_account_first_and_last_name(self):
+        self.user.first_name = "Alex"
+        self.user.last_name = "Example"
+        self.user.save(update_fields=["first_name", "last_name"])
+
+        self.import_pdf("Jordan Sample")
+
+        # Filling full_name here would change the name other members see,
+        # which falls back to first + last name while full_name is empty.
+        self.assertEqual(self.profile.full_name, "")
+        self.assertEqual(self.user.first_name, "Alex")
+        self.assertEqual(self.user.last_name, "Example")
+        self.assertEqual(self.profile.headline, "Imported Headline")
+
+    def test_import_never_changes_verified_name(self):
+        self.profile.full_name = "Alex Example"
+        self.profile.legal_name_locked = True
+        self.profile.save(update_fields=["full_name", "legal_name_locked"])
+
+        self.import_pdf("Jordan Sample")
+
+        self.assertEqual(self.profile.full_name, "Alex Example")
+        self.assertTrue(self.profile.legal_name_locked)
+
+    def test_import_does_not_fill_name_when_name_is_locked(self):
+        self.profile.legal_name_locked = True
+        self.profile.save(update_fields=["legal_name_locked"])
+
+        self.import_pdf("Jordan Sample")
+
+        self.assertEqual(self.profile.full_name, "")
+
+    def test_import_fills_name_only_when_account_has_no_name(self):
+        result = self.import_pdf("  Jordan Sample  ")
+
+        self.assertTrue(result["profile_updated"])
+        self.assertEqual(self.profile.full_name, "Jordan Sample")
+
+    def test_import_with_same_name_reports_no_name_change(self):
+        self.profile.full_name = "Jordan Sample"
+        self.profile.headline = "Imported Headline"
+        self.profile.save(update_fields=["full_name", "headline"])
+
+        result = self.import_pdf("Jordan Sample")
+
+        self.assertFalse(result["profile_updated"])
+        self.assertEqual(self.profile.full_name, "Jordan Sample")
 
 
 class LinkedInProfileImportUrlExtractionTests(TestCase):

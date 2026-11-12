@@ -333,8 +333,11 @@ def import_linkedin_profile_data(
     if profile is None:
         profile = UserProfile.objects.create(user=user)
 
+    # The member's name is never changed by an import: it is the name they
+    # set up their account with, and the name their passport (KYC) check is
+    # matched against.  The PDF name only fills in an account that has no
+    # name at all.
     profile_fields = {
-        "full_name": profile_data.get("full_name"),
         "headline": profile_data.get("headline"),
         "bio": profile_data.get("bio"),
         "location": profile_data.get("location"),
@@ -349,6 +352,15 @@ def import_linkedin_profile_data(
         if value and getattr(profile, field) != value:
             setattr(profile, field, value)
             changed = True
+
+    imported_name = (profile_data.get("full_name") or "").strip()
+    if (
+        imported_name
+        and not profile.legal_name_locked
+        and not _account_display_name(user)
+    ):
+        profile.full_name = imported_name
+        changed = True
 
     # Import LinkedIn social profile URL.
     # Keep existing links data and only update LinkedIn entry.
