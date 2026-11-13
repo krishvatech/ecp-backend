@@ -98,6 +98,17 @@ class ScheduledReplayExpiringAlertTests(TestCase):
         ev.refresh_from_db()
         self.assertIsNotNone(ev.replay_expiring_notifications_sent_at)
 
+    def test_worker_run_reports_the_real_count_without_an_error(self):
+        """Inside a worker result.get() raises "Never call result.get() within a task!"."""
+        self.event()
+
+        with self.assertNoLogs("events", level="ERROR"), \
+                mock.patch("celery.result.task_join_will_block", return_value=True):
+            result = scheduled_send_replay_expiring_alerts.apply().result
+
+        self.assertEqual(result, {"status": "ok", "events_processed": 1, "total_emails": 1})
+        self.assertEqual(len(mail.outbox), 1)
+
     def test_every_run_returns_counts_even_with_nothing_to_do(self):
         self.assertEqual(self.run_task(), {"status": "ok", "events_processed": 0, "total_emails": 0})
 
@@ -238,7 +249,7 @@ class ScheduledReplayExpiringAlertTests(TestCase):
             if len(calls) == 1:
                 raise RuntimeError("boom")
             return send_replay_expiring_soon_task.run(args[0]) and mock.Mock(
-                successful=lambda: True, get=lambda: {"status": "ok", "emails_sent": 1})
+                successful=lambda: True, result={"status": "ok", "emails_sent": 1})
 
         with mock.patch.object(send_replay_expiring_soon_task, "apply", side_effect=apply):
             result = self.run_task()
