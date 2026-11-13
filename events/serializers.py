@@ -5149,19 +5149,20 @@ class NetworkingTableSerializer(serializers.ModelSerializer):
             end_time__gt=timezone.now(),
         )
 
+    # Views that list tables annotate both values (see _tables_with_availability in
+    # networking_views). Check that the annotation exists, not that it is set:
+    # available_after is None when nothing blocks the table.
     def get_active_meeting_count(self, obj):
-        annotated_count = getattr(obj, "active_meeting_count", None)
-        if annotated_count is not None:
-            return annotated_count
+        if hasattr(obj, "active_meeting_count"):
+            return obj.active_meeting_count
         return self._blocking_meetings(obj).count()
 
     def get_is_in_use(self, obj):
         return self.get_active_meeting_count(obj) > 0
 
     def get_available_after(self, obj):
-        annotated_value = getattr(obj, "available_after", None)
-        if annotated_value is not None:
-            return annotated_value
+        if hasattr(obj, "available_after"):
+            return obj.available_after
         return self._blocking_meetings(obj).aggregate(
             available_after=Max("end_time")
         )["available_after"]

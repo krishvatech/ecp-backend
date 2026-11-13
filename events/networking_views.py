@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q, Max, Count
+from django.db.models import Q, Max, Count, Prefetch
 from django.conf import settings
 from datetime import timedelta
 
@@ -43,6 +43,43 @@ from events.tasks import (
     send_networking_meeting_suggested_email,
     send_networking_meeting_cancelled_email,
 )
+
+
+def _tables_with_availability(queryset):
+    """
+    Annotate tables with what NetworkingTableSerializer shows, so it doesn't run
+    three queries per table: how many accepted meetings still block each table,
+    and when the last of them ends.
+    """
+    blocking_meetings = Q(
+        networking_meetings__status="accepted",
+        networking_meetings__end_time__gt=timezone.now(),
+    )
+    return queryset.annotate(
+        active_meeting_count=Count(
+            "networking_meetings",
+            filter=blocking_meetings,
+            distinct=True,
+        ),
+        available_after=Max(
+            "networking_meetings__end_time",
+            filter=blocking_meetings,
+        ),
+    )
+
+
+def _meetings_with_details(queryset):
+    """
+    Load the people and table that NetworkingMeetingSerializer reads for every
+    meeting, so a list takes a fixed number of queries however many meetings it has.
+    """
+    return queryset.select_related(
+        "requester__user__profile",
+        "recipient__user__profile",
+        "suggested_by__user",
+    ).prefetch_related(
+        Prefetch("table", queryset=_tables_with_availability(NetworkingTable.objects.all())),
+    )
 
 
 class IsEventOwner(BasePermission):
@@ -113,25 +150,8 @@ class NetworkingTableViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         event_id = self.kwargs.get('event_id')
-        now = timezone.now()
-        blocking_meetings = Q(
-            networking_meetings__status="accepted",
-            networking_meetings__end_time__gt=now,
-        )
-        return (
-            NetworkingTable.objects
-            .filter(event_id=event_id, is_active=True)
-            .annotate(
-                active_meeting_count=Count(
-                    "networking_meetings",
-                    filter=blocking_meetings,
-                    distinct=True,
-                ),
-                available_after=Max(
-                    "networking_meetings__end_time",
-                    filter=blocking_meetings,
-                ),
-            )
+        return _tables_with_availability(
+            NetworkingTable.objects.filter(event_id=event_id, is_active=True)
         )
 
     def get_event(self):
@@ -323,10 +343,12 @@ class NetworkingMeetingListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         event_id = self.kwargs.get('event_id')
         user = self.request.user
-        return NetworkingMeeting.objects.filter(
-            event_id=event_id
-        ).filter(
-            Q(requester__user=user) | Q(recipient__user=user)
+        return _meetings_with_details(
+            NetworkingMeeting.objects.filter(
+                event_id=event_id
+            ).filter(
+                Q(requester__user=user) | Q(recipient__user=user)
+            )
         )
 
     def create(self, request, *args, **kwargs):
@@ -500,10 +522,12 @@ class NetworkingMeetingMyView(views.APIView):
 
         # Get all meetings where user is involved
         from django.db.models import Q
-        meetings = NetworkingMeeting.objects.filter(
-            event=event
-        ).filter(
-            Q(requester__user=request.user) | Q(recipient__user=request.user)
+        meetings = _meetings_with_details(
+            NetworkingMeeting.objects.filter(
+                event=event
+            ).filter(
+                Q(requester__user=request.user) | Q(recipient__user=request.user)
+            )
         ).order_by('-created_at')
 
         serializer = NetworkingMeetingSerializer(meetings, many=True)
